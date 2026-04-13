@@ -1,6 +1,1 @@
-@ControllerLayer_HostAddress = http://localhost:5188
-
-GET {{ControllerLayer_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
+### Sample request removed.
