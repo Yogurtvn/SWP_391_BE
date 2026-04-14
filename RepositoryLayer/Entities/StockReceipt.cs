@@ -1,6 +1,6 @@
 namespace RepositoryLayer.Entities;
 
-public class SupplyReceipt
+public class StockReceipt
 {
     public int ReceiptId { get; set; }
 
@@ -8,9 +8,7 @@ public class SupplyReceipt
 
     public int QuantityReceived { get; set; }
 
-    public DateTime? ReceivedDate { get; set; }
-
-    public string? BatchNumber { get; set; }
+    public DateTime ReceivedDate { get; set; }
 
     public int? StaffId { get; set; }
 

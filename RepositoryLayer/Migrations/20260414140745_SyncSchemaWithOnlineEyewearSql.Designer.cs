@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using RepositoryLayer.Data;
 
@@ -11,9 +12,11 @@ using RepositoryLayer.Data;
 namespace RepositoryLayer.Migrations
 {
     [DbContext(typeof(OnlineEyewearDbContext))]
-    partial class OnlineEyewearDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260414140745_SyncSchemaWithOnlineEyewearSql")]
+    partial class SyncSchemaWithOnlineEyewearSql
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -182,11 +185,11 @@ namespace RepositoryLayer.Migrations
                     b.Property<DateTime?>("ExpectedDeliveryDate")
                         .HasColumnType("datetime2");
 
-                    b.Property<byte>("OrderStatus")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("OrderStatusId")
+                        .HasColumnType("int");
 
-                    b.Property<byte>("OrderType")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("OrderTypeId")
+                        .HasColumnType("int");
 
                     b.Property<string>("ReceiverName")
                         .IsRequired()
@@ -207,8 +210,8 @@ namespace RepositoryLayer.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<byte?>("ShippingStatus")
-                        .HasColumnType("tinyint");
+                    b.Property<int?>("ShippingStatusId")
+                        .HasColumnType("int");
 
                     b.Property<int?>("StaffId")
                         .HasColumnType("int");
@@ -229,18 +232,17 @@ namespace RepositoryLayer.Migrations
 
                     b.HasKey("OrderId");
 
+                    b.HasIndex("OrderStatusId");
+
+                    b.HasIndex("OrderTypeId");
+
+                    b.HasIndex("ShippingStatusId");
+
                     b.HasIndex("StaffId");
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Orders", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_Orders_OrderStatus", "[OrderStatus] IN (1, 2, 3, 4, 5, 6, 7)");
-
-                            t.HasCheckConstraint("CK_Orders_OrderType", "[OrderType] IN (1, 2, 3)");
-
-                            t.HasCheckConstraint("CK_Orders_ShippingStatus", "[ShippingStatus] IS NULL OR [ShippingStatus] IN (1, 2, 3, 4, 5)");
-                        });
+                    b.ToTable("Orders", (string)null);
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.OrderItem", b =>
@@ -294,6 +296,64 @@ namespace RepositoryLayer.Migrations
                         });
                 });
 
+            modelBuilder.Entity("RepositoryLayer.Entities.OrderStatus", b =>
+                {
+                    b.Property<int>("OrderStatusId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("OrderStatusId"));
+
+                    b.Property<string>("StatusName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("OrderStatusId");
+
+                    b.HasIndex("StatusName")
+                        .IsUnique();
+
+                    b.ToTable("OrderStatuses", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            OrderStatusId = 1,
+                            StatusName = "Pending"
+                        },
+                        new
+                        {
+                            OrderStatusId = 2,
+                            StatusName = "Confirmed"
+                        },
+                        new
+                        {
+                            OrderStatusId = 3,
+                            StatusName = "AwaitingStock"
+                        },
+                        new
+                        {
+                            OrderStatusId = 4,
+                            StatusName = "Processing"
+                        },
+                        new
+                        {
+                            OrderStatusId = 5,
+                            StatusName = "Shipped"
+                        },
+                        new
+                        {
+                            OrderStatusId = 6,
+                            StatusName = "Completed"
+                        },
+                        new
+                        {
+                            OrderStatusId = 7,
+                            StatusName = "Cancelled"
+                        });
+                });
+
             modelBuilder.Entity("RepositoryLayer.Entities.OrderStatusHistory", b =>
                 {
                     b.Property<int>("HistoryId")
@@ -309,8 +369,8 @@ namespace RepositoryLayer.Migrations
                     b.Property<int>("OrderId")
                         .HasColumnType("int");
 
-                    b.Property<byte>("OrderStatus")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("OrderStatusId")
+                        .HasColumnType("int");
 
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()
@@ -324,11 +384,48 @@ namespace RepositoryLayer.Migrations
 
                     b.HasIndex("OrderId");
 
+                    b.HasIndex("OrderStatusId");
+
                     b.HasIndex("UpdatedByUserId");
 
-                    b.ToTable("OrderStatusHistory", null, t =>
+                    b.ToTable("OrderStatusHistory", (string)null);
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.OrderType", b =>
+                {
+                    b.Property<int>("OrderTypeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("OrderTypeId"));
+
+                    b.Property<string>("OrderTypeName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("OrderTypeId");
+
+                    b.HasIndex("OrderTypeName")
+                        .IsUnique();
+
+                    b.ToTable("OrderTypes", (string)null);
+
+                    b.HasData(
+                        new
                         {
-                            t.HasCheckConstraint("CK_OrderStatusHistory_OrderStatus", "[OrderStatus] IN (1, 2, 3, 4, 5, 6, 7)");
+                            OrderTypeId = 1,
+                            OrderTypeName = "Ready"
+                        },
+                        new
+                        {
+                            OrderTypeId = 2,
+                            OrderTypeName = "PreOrder"
+                        },
+                        new
+                        {
+                            OrderTypeId = 3,
+                            OrderTypeName = "Prescription"
                         });
                 });
 
@@ -350,22 +447,21 @@ namespace RepositoryLayer.Migrations
                     b.Property<DateTime?>("PaidAt")
                         .HasColumnType("datetime2");
 
-                    b.Property<byte>("PaymentMethod")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("PaymentMethodId")
+                        .HasColumnType("int");
 
-                    b.Property<byte>("PaymentStatus")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("PaymentStatusId")
+                        .HasColumnType("int");
 
                     b.HasKey("PaymentId");
 
                     b.HasIndex("OrderId");
 
-                    b.ToTable("Payments", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_Payments_PaymentMethod", "[PaymentMethod] IN (1, 2, 3)");
+                    b.HasIndex("PaymentMethodId");
 
-                            t.HasCheckConstraint("CK_Payments_PaymentStatus", "[PaymentStatus] IN (1, 2, 3)");
-                        });
+                    b.HasIndex("PaymentStatusId");
+
+                    b.ToTable("Payments", (string)null);
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.PaymentHistory", b =>
@@ -388,8 +484,8 @@ namespace RepositoryLayer.Migrations
                     b.Property<int>("PaymentId")
                         .HasColumnType("int");
 
-                    b.Property<byte>("PaymentStatus")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("PaymentStatusId")
+                        .HasColumnType("int");
 
                     b.Property<string>("TransactionCode")
                         .HasMaxLength(100)
@@ -399,9 +495,84 @@ namespace RepositoryLayer.Migrations
 
                     b.HasIndex("PaymentId");
 
-                    b.ToTable("PaymentHistory", null, t =>
+                    b.HasIndex("PaymentStatusId");
+
+                    b.ToTable("PaymentHistory", (string)null);
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.PaymentMethod", b =>
+                {
+                    b.Property<int>("PaymentMethodId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PaymentMethodId"));
+
+                    b.Property<string>("MethodName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("PaymentMethodId");
+
+                    b.HasIndex("MethodName")
+                        .IsUnique();
+
+                    b.ToTable("PaymentMethods", (string)null);
+
+                    b.HasData(
+                        new
                         {
-                            t.HasCheckConstraint("CK_PaymentHistory_PaymentStatus", "[PaymentStatus] IN (1, 2, 3)");
+                            PaymentMethodId = 1,
+                            MethodName = "COD"
+                        },
+                        new
+                        {
+                            PaymentMethodId = 2,
+                            MethodName = "VNPay"
+                        },
+                        new
+                        {
+                            PaymentMethodId = 3,
+                            MethodName = "Momo"
+                        });
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.PaymentStatus", b =>
+                {
+                    b.Property<int>("PaymentStatusId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PaymentStatusId"));
+
+                    b.Property<string>("StatusName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("PaymentStatusId");
+
+                    b.HasIndex("StatusName")
+                        .IsUnique();
+
+                    b.ToTable("PaymentStatuses", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            PaymentStatusId = 1,
+                            StatusName = "Pending"
+                        },
+                        new
+                        {
+                            PaymentStatusId = 2,
+                            StatusName = "Completed"
+                        },
+                        new
+                        {
+                            PaymentStatusId = 3,
+                            StatusName = "Failed"
                         });
                 });
 
@@ -481,8 +652,8 @@ namespace RepositoryLayer.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
-                    b.Property<byte>("PrescriptionStatus")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("PrescriptionStatusId")
+                        .HasColumnType("int");
 
                     b.Property<decimal?>("SphLeft")
                         .HasPrecision(5, 2)
@@ -505,13 +676,65 @@ namespace RepositoryLayer.Migrations
 
                     b.HasKey("PrescriptionId");
 
+                    b.HasIndex("PrescriptionStatusId");
+
                     b.HasIndex("StaffId");
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("PrescriptionSpecs", null, t =>
+                    b.ToTable("PrescriptionSpecs", (string)null);
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.PrescriptionStatus", b =>
+                {
+                    b.Property<int>("PrescriptionStatusId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PrescriptionStatusId"));
+
+                    b.Property<string>("StatusName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("PrescriptionStatusId");
+
+                    b.HasIndex("StatusName")
+                        .IsUnique();
+
+                    b.ToTable("PrescriptionStatuses", (string)null);
+
+                    b.HasData(
+                        new
                         {
-                            t.HasCheckConstraint("CK_PrescriptionSpecs_PrescriptionStatus", "[PrescriptionStatus] IN (1, 2, 3, 4, 5, 6)");
+                            PrescriptionStatusId = 1,
+                            StatusName = "Submitted"
+                        },
+                        new
+                        {
+                            PrescriptionStatusId = 2,
+                            StatusName = "Reviewing"
+                        },
+                        new
+                        {
+                            PrescriptionStatusId = 3,
+                            StatusName = "NeedMoreInfo"
+                        },
+                        new
+                        {
+                            PrescriptionStatusId = 4,
+                            StatusName = "Approved"
+                        },
+                        new
+                        {
+                            PrescriptionStatusId = 5,
+                            StatusName = "Rejected"
+                        },
+                        new
+                        {
+                            PrescriptionStatusId = 6,
+                            StatusName = "InProduction"
                         });
                 });
 
@@ -638,6 +861,92 @@ namespace RepositoryLayer.Migrations
                     b.ToTable("ProductVariants", (string)null);
                 });
 
+            modelBuilder.Entity("RepositoryLayer.Entities.Role", b =>
+                {
+                    b.Property<int>("RoleId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("RoleId"));
+
+                    b.Property<string>("RoleName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("RoleId");
+
+                    b.HasIndex("RoleName")
+                        .IsUnique();
+
+                    b.ToTable("Roles", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            RoleId = 1,
+                            RoleName = "Admin"
+                        },
+                        new
+                        {
+                            RoleId = 2,
+                            RoleName = "Staff"
+                        },
+                        new
+                        {
+                            RoleId = 3,
+                            RoleName = "Customer"
+                        });
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.ShippingStatus", b =>
+                {
+                    b.Property<int>("ShippingStatusId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ShippingStatusId"));
+
+                    b.Property<string>("StatusName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("ShippingStatusId");
+
+                    b.HasIndex("StatusName")
+                        .IsUnique();
+
+                    b.ToTable("ShippingStatuses", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            ShippingStatusId = 1,
+                            StatusName = "Pending"
+                        },
+                        new
+                        {
+                            ShippingStatusId = 2,
+                            StatusName = "Picking"
+                        },
+                        new
+                        {
+                            ShippingStatusId = 3,
+                            StatusName = "Delivering"
+                        },
+                        new
+                        {
+                            ShippingStatusId = 4,
+                            StatusName = "Delivered"
+                        },
+                        new
+                        {
+                            ShippingStatusId = 5,
+                            StatusName = "Failed"
+                        });
+                });
+
             modelBuilder.Entity("RepositoryLayer.Entities.StockReceipt", b =>
                 {
                     b.Property<int>("ReceiptId")
@@ -712,18 +1021,17 @@ namespace RepositoryLayer.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
-                    b.Property<byte>("Role")
-                        .HasColumnType("tinyint");
+                    b.Property<int>("RoleId")
+                        .HasColumnType("int");
 
                     b.HasKey("UserId");
 
                     b.HasIndex("Email")
                         .IsUnique();
 
-                    b.ToTable("Users", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_Users_Role", "[Role] IN (1, 2, 3)");
-                        });
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.Cart", b =>
@@ -769,6 +1077,23 @@ namespace RepositoryLayer.Migrations
 
             modelBuilder.Entity("RepositoryLayer.Entities.Order", b =>
                 {
+                    b.HasOne("RepositoryLayer.Entities.OrderStatus", "OrderStatus")
+                        .WithMany("Orders")
+                        .HasForeignKey("OrderStatusId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("RepositoryLayer.Entities.OrderType", "OrderType")
+                        .WithMany("Orders")
+                        .HasForeignKey("OrderTypeId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("RepositoryLayer.Entities.ShippingStatus", "ShippingStatus")
+                        .WithMany("Orders")
+                        .HasForeignKey("ShippingStatusId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
                     b.HasOne("RepositoryLayer.Entities.User", "Staff")
                         .WithMany("HandledOrders")
                         .HasForeignKey("StaffId")
@@ -779,6 +1104,12 @@ namespace RepositoryLayer.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
+
+                    b.Navigation("OrderStatus");
+
+                    b.Navigation("OrderType");
+
+                    b.Navigation("ShippingStatus");
 
                     b.Navigation("Staff");
 
@@ -826,12 +1157,20 @@ namespace RepositoryLayer.Migrations
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
+                    b.HasOne("RepositoryLayer.Entities.OrderStatus", "OrderStatus")
+                        .WithMany("OrderStatusHistories")
+                        .HasForeignKey("OrderStatusId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
                     b.HasOne("RepositoryLayer.Entities.User", "UpdatedByUser")
                         .WithMany("UpdatedOrderStatusHistories")
                         .HasForeignKey("UpdatedByUserId")
                         .OnDelete(DeleteBehavior.NoAction);
 
                     b.Navigation("Order");
+
+                    b.Navigation("OrderStatus");
 
                     b.Navigation("UpdatedByUser");
                 });
@@ -844,7 +1183,23 @@ namespace RepositoryLayer.Migrations
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
+                    b.HasOne("RepositoryLayer.Entities.PaymentMethod", "PaymentMethod")
+                        .WithMany("Payments")
+                        .HasForeignKey("PaymentMethodId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("RepositoryLayer.Entities.PaymentStatus", "PaymentStatus")
+                        .WithMany("Payments")
+                        .HasForeignKey("PaymentStatusId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
                     b.Navigation("Order");
+
+                    b.Navigation("PaymentMethod");
+
+                    b.Navigation("PaymentStatus");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.PaymentHistory", b =>
@@ -855,11 +1210,25 @@ namespace RepositoryLayer.Migrations
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
+                    b.HasOne("RepositoryLayer.Entities.PaymentStatus", "PaymentStatus")
+                        .WithMany("PaymentHistories")
+                        .HasForeignKey("PaymentStatusId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
                     b.Navigation("Payment");
+
+                    b.Navigation("PaymentStatus");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.PrescriptionSpec", b =>
                 {
+                    b.HasOne("RepositoryLayer.Entities.PrescriptionStatus", "PrescriptionStatus")
+                        .WithMany("PrescriptionSpecs")
+                        .HasForeignKey("PrescriptionStatusId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
                     b.HasOne("RepositoryLayer.Entities.User", "Staff")
                         .WithMany("VerifiedPrescriptionSpecs")
                         .HasForeignKey("StaffId")
@@ -870,6 +1239,8 @@ namespace RepositoryLayer.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
+
+                    b.Navigation("PrescriptionStatus");
 
                     b.Navigation("Staff");
 
@@ -926,6 +1297,17 @@ namespace RepositoryLayer.Migrations
                     b.Navigation("Variant");
                 });
 
+            modelBuilder.Entity("RepositoryLayer.Entities.User", b =>
+                {
+                    b.HasOne("RepositoryLayer.Entities.Role", "Role")
+                        .WithMany("Users")
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Role");
+                });
+
             modelBuilder.Entity("RepositoryLayer.Entities.Cart", b =>
                 {
                     b.Navigation("CartItems");
@@ -950,14 +1332,43 @@ namespace RepositoryLayer.Migrations
                     b.Navigation("Payments");
                 });
 
+            modelBuilder.Entity("RepositoryLayer.Entities.OrderStatus", b =>
+                {
+                    b.Navigation("OrderStatusHistories");
+
+                    b.Navigation("Orders");
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.OrderType", b =>
+                {
+                    b.Navigation("Orders");
+                });
+
             modelBuilder.Entity("RepositoryLayer.Entities.Payment", b =>
                 {
                     b.Navigation("PaymentHistories");
                 });
 
+            modelBuilder.Entity("RepositoryLayer.Entities.PaymentMethod", b =>
+                {
+                    b.Navigation("Payments");
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.PaymentStatus", b =>
+                {
+                    b.Navigation("PaymentHistories");
+
+                    b.Navigation("Payments");
+                });
+
             modelBuilder.Entity("RepositoryLayer.Entities.PrescriptionSpec", b =>
                 {
                     b.Navigation("OrderItems");
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.PrescriptionStatus", b =>
+                {
+                    b.Navigation("PrescriptionSpecs");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.Product", b =>
@@ -976,6 +1387,16 @@ namespace RepositoryLayer.Migrations
                     b.Navigation("OrderItems");
 
                     b.Navigation("StockReceipts");
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.Role", b =>
+                {
+                    b.Navigation("Users");
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.ShippingStatus", b =>
+                {
+                    b.Navigation("Orders");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.User", b =>

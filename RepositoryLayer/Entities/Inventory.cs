@@ -6,9 +6,11 @@ public class Inventory
 
     public int Quantity { get; set; }
 
-    public int? ReservedQuantity { get; set; }
+    public bool IsPreOrderAllowed { get; set; }
 
-    public bool? IsPreOrderAllowed { get; set; }
+    public DateTime? ExpectedRestockDate { get; set; }
+
+    public string? PreOrderNote { get; set; }
 
     public ProductVariant Variant { get; set; } = null!;
 }

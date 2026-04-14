@@ -1,10 +1,12 @@
+using RepositoryLayer.Enums;
+
 namespace RepositoryLayer.Entities;
 
 public class PrescriptionSpec
 {
     public int PrescriptionId { get; set; }
 
-    public int? UserId { get; set; }
+    public int UserId { get; set; }
 
     public decimal? SphLeft { get; set; }
 
@@ -24,19 +26,17 @@ public class PrescriptionSpec
 
     public int? StaffId { get; set; }
 
-    public int PrescriptionStatusId { get; set; }
+    public PrescriptionStatus PrescriptionStatus { get; set; }
 
     public DateTime? VerifiedAt { get; set; }
 
     public string? Notes { get; set; }
 
-    public DateTime? CreatedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
 
-    public User? User { get; set; }
+    public User User { get; set; } = null!;
 
     public User? Staff { get; set; }
-
-    public PrescriptionStatus PrescriptionStatus { get; set; } = null!;
 
     public ICollection<OrderItem> OrderItems { get; set; } = [];
 }

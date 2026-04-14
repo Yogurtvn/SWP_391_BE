@@ -6,7 +6,7 @@ public class ProductVariant
 
     public int ProductId { get; set; }
 
-    public string? Sku { get; set; }
+    public string Sku { get; set; } = string.Empty;
 
     public string? FrameType { get; set; }
 
@@ -16,6 +16,8 @@ public class ProductVariant
 
     public decimal Price { get; set; }
 
+    public bool IsActive { get; set; }
+
     public Product Product { get; set; } = null!;
 
     public Inventory? Inventory { get; set; }
@@ -24,5 +26,5 @@ public class ProductVariant
 
     public ICollection<OrderItem> OrderItems { get; set; } = [];
 
-    public ICollection<SupplyReceipt> SupplyReceipts { get; set; } = [];
+    public ICollection<StockReceipt> StockReceipts { get; set; } = [];
 }
