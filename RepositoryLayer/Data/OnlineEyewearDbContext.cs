@@ -65,6 +65,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
             entity.Property(x => x.Email).HasMaxLength(255).IsRequired();
             entity.Property(x => x.PasswordHash).HasMaxLength(255).IsRequired();
+            entity.Property(x => x.GoogleSubjectId).HasMaxLength(255);
             entity.Property(x => x.FullName).HasMaxLength(255);
             entity.Property(x => x.Phone).HasMaxLength(20);
             entity.Property(x => x.Role).HasColumnType("tinyint");
@@ -72,6 +73,9 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.IsActive).HasDefaultValue(true);
 
             entity.HasIndex(x => x.Email).IsUnique();
+            entity.HasIndex(x => x.GoogleSubjectId)
+                .IsUnique()
+                .HasFilter("[GoogleSubjectId] IS NOT NULL");
         });
 
         modelBuilder.Entity<Cart>(entity =>
