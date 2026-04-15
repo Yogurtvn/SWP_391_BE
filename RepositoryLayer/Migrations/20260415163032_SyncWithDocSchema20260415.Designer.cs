@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using RepositoryLayer.Data;
 
@@ -11,9 +12,11 @@ using RepositoryLayer.Data;
 namespace RepositoryLayer.Migrations
 {
     [DbContext(typeof(OnlineEyewearDbContext))]
-    partial class OnlineEyewearDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260415163032_SyncWithDocSchema20260415")]
+    partial class SyncWithDocSchema20260415
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -62,162 +65,23 @@ namespace RepositoryLayer.Migrations
                     b.Property<int>("CartId")
                         .HasColumnType("int");
 
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
-
-                    b.Property<byte>("ItemType")
-                        .HasColumnType("tinyint");
-
-                    b.Property<byte>("OrderType")
-                        .HasColumnType("tinyint");
-
                     b.Property<int>("Quantity")
                         .HasColumnType("int");
-
-                    b.Property<string>("SelectedColor")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<decimal>("TotalPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<decimal>("UnitPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
 
                     b.Property<int>("VariantId")
                         .HasColumnType("int");
 
                     b.HasKey("CartItemId");
 
-                    b.HasIndex("CartId");
-
-                    b.HasIndex("ItemType");
-
-                    b.HasIndex("OrderType");
-
                     b.HasIndex("VariantId");
+
+                    b.HasIndex("CartId", "VariantId")
+                        .IsUnique();
 
                     b.ToTable("CartItems", null, t =>
                         {
-                            t.HasCheckConstraint("CK_CartItems_ItemType", "[ItemType] IN (1, 2)");
-
-                            t.HasCheckConstraint("CK_CartItems_OrderType", "[OrderType] IN (1, 2, 3)");
-
                             t.HasCheckConstraint("CK_CartItems_Quantity", "[Quantity] > 0");
                         });
-                });
-
-            modelBuilder.Entity("RepositoryLayer.Entities.CartPrescriptionDetail", b =>
-                {
-                    b.Property<int>("CartPrescriptionId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("CartPrescriptionId"));
-
-                    b.Property<int?>("AxisLeft")
-                        .HasColumnType("int")
-                        .HasColumnName("Axis_Left");
-
-                    b.Property<int?>("AxisRight")
-                        .HasColumnType("int")
-                        .HasColumnName("Axis_Right");
-
-                    b.Property<int>("CartItemId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("CoatingPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<string>("Coatings")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
-
-                    b.Property<decimal?>("CylLeft")
-                        .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
-                        .HasColumnName("CYL_Left");
-
-                    b.Property<decimal?>("CylRight")
-                        .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
-                        .HasColumnName("CYL_Right");
-
-                    b.Property<decimal>("LensBasePrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<string>("LensMaterial")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("LensTypeCode")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<int>("LensTypeId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Notes")
-                        .HasMaxLength(255)
-                        .HasColumnType("nvarchar(255)");
-
-                    b.Property<decimal?>("Pd")
-                        .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
-                        .HasColumnName("PD");
-
-                    b.Property<string>("PrescriptionImage")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<decimal?>("SphLeft")
-                        .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
-                        .HasColumnName("SPH_Left");
-
-                    b.Property<decimal?>("SphRight")
-                        .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
-                        .HasColumnName("SPH_Right");
-
-                    b.Property<decimal>("TotalLensPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.HasKey("CartPrescriptionId");
-
-                    b.HasIndex("CartItemId")
-                        .IsUnique();
-
-                    b.HasIndex("LensTypeId");
-
-                    b.ToTable("CartPrescriptionDetails", (string)null);
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.Category", b =>
@@ -263,8 +127,6 @@ namespace RepositoryLayer.Migrations
 
                     b.HasKey("VariantId");
 
-                    b.HasIndex("IsPreOrderAllowed");
-
                     b.ToTable("Inventory", null, t =>
                         {
                             t.HasCheckConstraint("CK_Inventory_Quantity", "[Quantity] >= 0");
@@ -293,11 +155,6 @@ namespace RepositoryLayer.Migrations
                         .HasColumnType("bit")
                         .HasDefaultValue(true);
 
-                    b.Property<string>("LensCode")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
                     b.Property<string>("LensName")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -308,9 +165,6 @@ namespace RepositoryLayer.Migrations
                         .HasColumnType("decimal(10,2)");
 
                     b.HasKey("LensTypeId");
-
-                    b.HasIndex("LensCode")
-                        .IsUnique();
 
                     b.ToTable("LensTypes", (string)null);
                 });
@@ -400,6 +254,12 @@ namespace RepositoryLayer.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("OrderItemId"));
 
+                    b.Property<decimal>("FramePrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
+
                     b.Property<decimal?>("LensPrice")
                         .ValueGeneratedOnAdd()
                         .HasPrecision(10, 2)
@@ -417,16 +277,6 @@ namespace RepositoryLayer.Migrations
 
                     b.Property<int>("Quantity")
                         .HasColumnType("int");
-
-                    b.Property<string>("SelectedColor")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<decimal>("UnitPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
 
                     b.Property<int>("VariantId")
                         .HasColumnType("int");
@@ -606,16 +456,6 @@ namespace RepositoryLayer.Migrations
                         .HasColumnType("int")
                         .HasColumnName("Axis_Right");
 
-                    b.Property<decimal>("CoatingPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<string>("Coatings")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime2")
@@ -630,23 +470,6 @@ namespace RepositoryLayer.Migrations
                         .HasPrecision(5, 2)
                         .HasColumnType("decimal(5,2)")
                         .HasColumnName("CYL_Right");
-
-                    b.Property<decimal>("LensBasePrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<string>("LensMaterial")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("LensTypeCode")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<int>("LensTypeId")
-                        .HasColumnType("int");
 
                     b.Property<string>("Notes")
                         .HasMaxLength(255)
@@ -677,12 +500,6 @@ namespace RepositoryLayer.Migrations
                     b.Property<int?>("StaffId")
                         .HasColumnType("int");
 
-                    b.Property<decimal>("TotalLensPrice")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
-                        .HasDefaultValue(0m);
-
                     b.Property<int>("UserId")
                         .HasColumnType("int");
 
@@ -690,8 +507,6 @@ namespace RepositoryLayer.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("PrescriptionId");
-
-                    b.HasIndex("LensTypeId");
 
                     b.HasIndex("StaffId");
 
@@ -733,31 +548,16 @@ namespace RepositoryLayer.Migrations
                         .HasColumnType("bit")
                         .HasDefaultValue(true);
 
-                    b.Property<bool>("PrescriptionCompatible")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
-
                     b.Property<string>("ProductName")
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
 
-                    b.Property<byte>("ProductType")
-                        .HasColumnType("tinyint");
-
                     b.HasKey("ProductId");
 
                     b.HasIndex("CategoryId");
 
-                    b.HasIndex("PrescriptionCompatible");
-
-                    b.HasIndex("ProductType");
-
-                    b.ToTable("Products", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_Products_ProductType", "[ProductType] IN (1, 2, 3)");
-                        });
+                    b.ToTable("Products", (string)null);
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.ProductImage", b =>
@@ -967,25 +767,6 @@ namespace RepositoryLayer.Migrations
                     b.Navigation("Variant");
                 });
 
-            modelBuilder.Entity("RepositoryLayer.Entities.CartPrescriptionDetail", b =>
-                {
-                    b.HasOne("RepositoryLayer.Entities.CartItem", "CartItem")
-                        .WithOne("CartPrescriptionDetail")
-                        .HasForeignKey("RepositoryLayer.Entities.CartPrescriptionDetail", "CartItemId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired();
-
-                    b.HasOne("RepositoryLayer.Entities.LensType", "LensType")
-                        .WithMany("CartPrescriptionDetails")
-                        .HasForeignKey("LensTypeId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired();
-
-                    b.Navigation("CartItem");
-
-                    b.Navigation("LensType");
-                });
-
             modelBuilder.Entity("RepositoryLayer.Entities.Inventory", b =>
                 {
                     b.HasOne("RepositoryLayer.Entities.ProductVariant", "Variant")
@@ -1090,12 +871,6 @@ namespace RepositoryLayer.Migrations
 
             modelBuilder.Entity("RepositoryLayer.Entities.PrescriptionSpec", b =>
                 {
-                    b.HasOne("RepositoryLayer.Entities.LensType", "LensType")
-                        .WithMany("PrescriptionSpecs")
-                        .HasForeignKey("LensTypeId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired();
-
                     b.HasOne("RepositoryLayer.Entities.User", "Staff")
                         .WithMany("VerifiedPrescriptionSpecs")
                         .HasForeignKey("StaffId")
@@ -1106,8 +881,6 @@ namespace RepositoryLayer.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
-
-                    b.Navigation("LensType");
 
                     b.Navigation("Staff");
 
@@ -1169,11 +942,6 @@ namespace RepositoryLayer.Migrations
                     b.Navigation("CartItems");
                 });
 
-            modelBuilder.Entity("RepositoryLayer.Entities.CartItem", b =>
-                {
-                    b.Navigation("CartPrescriptionDetail");
-                });
-
             modelBuilder.Entity("RepositoryLayer.Entities.Category", b =>
                 {
                     b.Navigation("Products");
@@ -1181,11 +949,7 @@ namespace RepositoryLayer.Migrations
 
             modelBuilder.Entity("RepositoryLayer.Entities.LensType", b =>
                 {
-                    b.Navigation("CartPrescriptionDetails");
-
                     b.Navigation("OrderItems");
-
-                    b.Navigation("PrescriptionSpecs");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.Order", b =>

@@ -7,6 +7,19 @@ public enum UserRole : byte
     Customer = 3
 }
 
+public enum ProductType : byte
+{
+    Frame = 1,
+    Sunglasses = 2,
+    Lens = 3
+}
+
+public enum CartItemType : byte
+{
+    Standard = 1,
+    PrescriptionConfigured = 2
+}
+
 public enum OrderType : byte
 {
     Ready = 1,

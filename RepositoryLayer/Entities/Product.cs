@@ -1,3 +1,5 @@
+using RepositoryLayer.Enums;
+
 namespace RepositoryLayer.Entities;
 
 public class Product
@@ -7,6 +9,10 @@ public class Product
     public string ProductName { get; set; } = string.Empty;
 
     public int? CategoryId { get; set; }
+
+    public ProductType ProductType { get; set; }
+
+    public bool PrescriptionCompatible { get; set; }
 
     public string? Description { get; set; }
 
