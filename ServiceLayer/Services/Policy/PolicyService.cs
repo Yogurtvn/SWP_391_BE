@@ -1,3 +1,4 @@
+using RepositoryLayer.Common;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Policy;
 using ServiceLayer.DTOs.Policy.Request;
@@ -11,38 +12,33 @@ public class PolicyService(IUnitOfWork unitOfWork) : IPolicyService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork; // Inject UnitOfWork để truy cập repository và quản lý transaction
 
-    public async Task<PolicyListResponse> GetPoliciesAsync(int page, int pageSize, string? search, CancellationToken cancellationToken = default)
+    public async Task<PagedResult<PolicyDtoResponse>> GetPoliciesAsync(
+        PaginationRequest paginationRequest,
+        string? search,
+        CancellationToken cancellationToken = default)
     {
-        var repository = _unitOfWork.Repository<PolicyEntity>(); // Lấy repository cho entity Policy
+        ArgumentNullException.ThrowIfNull(paginationRequest);
 
-        // Đếm tổng số policy (có lọc theo search nếu có)
-        var totalItems = await repository.CountAsync(
-            string.IsNullOrWhiteSpace(search)
-                ? null                                    // Không có search → đếm tất cả
-                : p => p.Title.Contains(search));         // Có search → chỉ đếm những policy có title chứa keyword
-
-        // Lấy danh sách policy, sắp xếp theo ngày tạo mới nhất
-        var policies = await repository.FindAsync(
-            filter: string.IsNullOrWhiteSpace(search)
+        var repository = _unitOfWork.Repository<PolicyEntity>();
+        var normalizedSearch = NormalizeSearch(search);
+        var pagedPolicies = await repository.GetPagedAsync(
+            paginationRequest: paginationRequest,
+            filter: normalizedSearch is null
                 ? null
-                : p => p.Title.Contains(search),          // Lọc theo title nếu có search
-            orderBy: q => q.OrderByDescending(p => p.CreatedAt), // Sắp xếp mới nhất trước
-            tracked: false);                              // Không cần tracking vì chỉ đọc dữ liệu
+                : policy => policy.Title.Contains(normalizedSearch),
+            orderBy: query => query.OrderByDescending(policy => policy.CreatedAt),
+            tracked: false,
+            cancellationToken: cancellationToken);
 
-        // Phân trang: bỏ qua các item của trang trước, lấy đúng số lượng pageSize
-        var pagedItems = policies
-            .Skip((page - 1) * pageSize)                  // Bỏ qua (page-1) * pageSize items
-            .Take(pageSize)                               // Lấy pageSize items
-            .Select(MapToDto);                            // Chuyển đổi Entity → DTO
+        var items = pagedPolicies.Items
+            .Select(MapToDto)
+            .ToList();
 
-        return new PolicyListResponse
-        {
-            Items = pagedItems,
-            Page = page,
-            PageSize = pageSize,
-            TotalItems = totalItems,
-            TotalPages = (int)Math.Ceiling((double)totalItems / pageSize) // Làm tròn lên để tính tổng số trang
-        };
+        return PagedResult<PolicyDtoResponse>.Create(
+            items,
+            pagedPolicies.Page,
+            pagedPolicies.PageSize,
+            pagedPolicies.TotalItems);
     }
 
     public async Task<PolicyDtoResponse?> GetPolicyByIdAsync(int policyId, CancellationToken cancellationToken = default)
@@ -121,5 +117,11 @@ public class PolicyService(IUnitOfWork unitOfWork) : IPolicyService
             Title = policy.Title,
             Content = policy.Content
         };
+    }
+
+    private static string? NormalizeSearch(string? search)
+    {
+        var normalizedSearch = search?.Trim();
+        return string.IsNullOrWhiteSpace(normalizedSearch) ? null : normalizedSearch;
     }
 }

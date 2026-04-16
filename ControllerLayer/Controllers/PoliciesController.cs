@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using RepositoryLayer.Common;
 using ServiceLayer.Contracts.Policy;
 using ServiceLayer.DTOs.Policy.Request;
 using ServiceLayer.DTOs.Policy.Response;
@@ -16,7 +17,7 @@ public class PoliciesController(IPolicyService policyService) : ControllerBase
     // Lấy danh sách policy có phân trang và tìm kiếm
     [AllowAnonymous]  // Ai cũng có thể xem danh sách policy
     [HttpGet]
-    public async Task<ActionResult<PolicyListResponse>> GetPolicies(
+    public async Task<ActionResult<PagedResult<PolicyDtoResponse>>> GetPolicies(
         [FromQuery] int page = 1,           // Trang hiện tại, mặc định = 1
         [FromQuery] int pageSize = 20,      // Số item mỗi trang, mặc định = 20
         [FromQuery] string? search = null,  // Từ khóa tìm kiếm theo title (optional)
@@ -25,7 +26,10 @@ public class PoliciesController(IPolicyService policyService) : ControllerBase
         if (page < 1) page = 1;             // Đảm bảo page không âm
         if (pageSize < 1) pageSize = 20;    // Đảm bảo pageSize hợp lệ
 
-        var result = await _policyService.GetPoliciesAsync(page, pageSize, search, cancellationToken);
+        var result = await _policyService.GetPoliciesAsync(
+            new PaginationRequest(page, pageSize),
+            search,
+            cancellationToken);
         return Ok(result);                  // Trả về 200 OK với danh sách policy
     }
 
