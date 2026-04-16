@@ -26,6 +26,8 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
     public DbSet<CartItem> CartItems => Set<CartItem>();
 
+    public DbSet<CartPrescriptionDetail> CartPrescriptionDetails => Set<CartPrescriptionDetail>();
+
     public DbSet<PrescriptionSpec> PrescriptionSpecs => Set<PrescriptionSpec>();
 
     public DbSet<Order> Orders => Set<Order>();
@@ -97,10 +99,22 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.ToTable("CartItems", table =>
             {
                 table.HasCheckConstraint("CK_CartItems_Quantity", "[Quantity] > 0");
+                table.HasCheckConstraint("CK_CartItems_ItemType", "[ItemType] IN (1, 2)");
+                table.HasCheckConstraint("CK_CartItems_OrderType", "[OrderType] IN (1, 2, 3)");
             });
 
             entity.HasKey(x => x.CartItemId);
-            entity.HasIndex(x => new { x.CartId, x.VariantId }).IsUnique();
+
+            entity.Property(x => x.ItemType).HasColumnType("tinyint");
+            entity.Property(x => x.OrderType).HasColumnType("tinyint");
+            entity.Property(x => x.SelectedColor).HasMaxLength(50);
+            entity.Property(x => x.UnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.TotalPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+            entity.Property(x => x.UpdatedAt).HasDefaultValueSql("GETDATE()");
+
+            entity.HasIndex(x => x.OrderType);
+            entity.HasIndex(x => x.ItemType);
 
             entity.HasOne(x => x.Cart)
                 .WithMany(x => x.CartItems)
@@ -113,6 +127,39 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
                 .OnDelete(DeleteBehavior.NoAction);
         });
 
+        modelBuilder.Entity<CartPrescriptionDetail>(entity =>
+        {
+            entity.ToTable("CartPrescriptionDetails");
+            entity.HasKey(x => x.CartPrescriptionId);
+
+            entity.Property(x => x.LensTypeCode).HasMaxLength(50);
+            entity.Property(x => x.LensMaterial).HasMaxLength(50);
+            entity.Property(x => x.Coatings).HasMaxLength(500);
+            entity.Property(x => x.LensBasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.CoatingPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.TotalLensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.SphLeft).HasColumnName("SPH_Left").HasPrecision(5, 2);
+            entity.Property(x => x.SphRight).HasColumnName("SPH_Right").HasPrecision(5, 2);
+            entity.Property(x => x.CylLeft).HasColumnName("CYL_Left").HasPrecision(5, 2);
+            entity.Property(x => x.CylRight).HasColumnName("CYL_Right").HasPrecision(5, 2);
+            entity.Property(x => x.AxisLeft).HasColumnName("Axis_Left");
+            entity.Property(x => x.AxisRight).HasColumnName("Axis_Right");
+            entity.Property(x => x.Pd).HasColumnName("PD").HasPrecision(5, 2);
+            entity.Property(x => x.PrescriptionImage).HasMaxLength(500);
+            entity.Property(x => x.Notes).HasMaxLength(255);
+            entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+
+            entity.HasOne(x => x.CartItem)
+                .WithOne(x => x.CartPrescriptionDetail)
+                .HasForeignKey<CartPrescriptionDetail>(x => x.CartItemId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            entity.HasOne(x => x.LensType)
+                .WithMany(x => x.CartPrescriptionDetails)
+                .HasForeignKey(x => x.LensTypeId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
         modelBuilder.Entity<PrescriptionSpec>(entity =>
         {
             entity.ToTable("PrescriptionSpecs", table =>
@@ -122,6 +169,12 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
             entity.HasKey(x => x.PrescriptionId);
 
+            entity.Property(x => x.LensTypeCode).HasMaxLength(50);
+            entity.Property(x => x.LensMaterial).HasMaxLength(50);
+            entity.Property(x => x.Coatings).HasMaxLength(500);
+            entity.Property(x => x.LensBasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.CoatingPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.TotalLensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.SphLeft).HasColumnName("SPH_Left").HasPrecision(5, 2);
             entity.Property(x => x.SphRight).HasColumnName("SPH_Right").HasPrecision(5, 2);
             entity.Property(x => x.CylLeft).HasColumnName("CYL_Left").HasPrecision(5, 2);
@@ -137,6 +190,11 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.HasOne(x => x.User)
                 .WithMany(x => x.PrescriptionSpecs)
                 .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            entity.HasOne(x => x.LensType)
+                .WithMany(x => x.PrescriptionSpecs)
+                .HasForeignKey(x => x.LensTypeId)
                 .OnDelete(DeleteBehavior.NoAction);
 
             entity.HasOne(x => x.Staff)
@@ -158,13 +216,22 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
         modelBuilder.Entity<Product>(entity =>
         {
-            entity.ToTable("Products");
+            entity.ToTable("Products", table =>
+            {
+                table.HasCheckConstraint("CK_Products_ProductType", "[ProductType] IN (1, 2, 3)");
+            });
+
             entity.HasKey(x => x.ProductId);
 
             entity.Property(x => x.ProductName).HasMaxLength(255).IsRequired();
+            entity.Property(x => x.ProductType).HasColumnType("tinyint");
+            entity.Property(x => x.PrescriptionCompatible).HasDefaultValue(false);
             entity.Property(x => x.BasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+
+            entity.HasIndex(x => x.ProductType);
+            entity.HasIndex(x => x.PrescriptionCompatible);
 
             entity.HasOne(x => x.Category)
                 .WithMany(x => x.Products)
@@ -212,11 +279,14 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.ToTable("LensTypes");
             entity.HasKey(x => x.LensTypeId);
 
+            entity.Property(x => x.LensCode).HasMaxLength(50).IsRequired();
             entity.Property(x => x.LensName).HasMaxLength(100).IsRequired();
             entity.Property(x => x.Description).HasMaxLength(500);
             entity.Property(x => x.Price).HasPrecision(10, 2).IsRequired();
             entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+
+            entity.HasIndex(x => x.LensCode).IsUnique();
         });
     }
 
@@ -233,6 +303,8 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
             entity.Property(x => x.IsPreOrderAllowed).HasDefaultValue(false);
             entity.Property(x => x.PreOrderNote).HasMaxLength(255);
+
+            entity.HasIndex(x => x.IsPreOrderAllowed);
 
             entity.HasOne(x => x.Variant)
                 .WithOne(x => x.Inventory)
@@ -308,7 +380,8 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
             entity.HasKey(x => x.OrderItemId);
 
-            entity.Property(x => x.FramePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.SelectedColor).HasMaxLength(50);
+            entity.Property(x => x.UnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.LensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
 
             entity.HasOne(x => x.Order)

@@ -4,6 +4,8 @@ public class LensType
 {
     public int LensTypeId { get; set; }
 
+    public string LensCode { get; set; } = string.Empty;
+
     public string LensName { get; set; } = string.Empty;
 
     public string? Description { get; set; }
@@ -14,5 +16,9 @@ public class LensType
 
     public DateTime CreatedAt { get; set; }
 
+    public ICollection<CartPrescriptionDetail> CartPrescriptionDetails { get; set; } = [];
+
     public ICollection<OrderItem> OrderItems { get; set; } = [];
+
+    public ICollection<PrescriptionSpec> PrescriptionSpecs { get; set; } = [];
 }

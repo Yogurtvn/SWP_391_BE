@@ -10,7 +10,9 @@ public class OrderItem
 
     public int Quantity { get; set; }
 
-    public decimal FramePrice { get; set; }
+    public string? SelectedColor { get; set; }
+
+    public decimal UnitPrice { get; set; }
 
     public int? LensTypeId { get; set; }
 
