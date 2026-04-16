@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RepositoryLayer.Common;
 using RepositoryLayer.Data;
 using RepositoryLayer.Interfaces;
 using System.Linq.Expressions;
@@ -27,14 +28,31 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         string includeProperties = "",
         bool tracked = true)
     {
-        IQueryable<T> query = BuildQuery(filter, includeProperties, tracked);
-
-        if (orderBy is not null)
-        {
-            query = orderBy(query);
-        }
-
+        IQueryable<T> query = ApplyOrdering(BuildQuery(filter, includeProperties, tracked), orderBy);
         return await query.ToListAsync();
+    }
+
+    public async Task<PagedResult<T>> GetPagedAsync(
+        PaginationRequest paginationRequest,
+        Expression<Func<T, bool>>? filter = null,
+        Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
+        string includeProperties = "",
+        bool tracked = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paginationRequest);
+
+        var totalItems = await BuildQuery(filter, string.Empty, tracked: false)
+            .CountAsync(cancellationToken);
+
+        IQueryable<T> query = ApplyOrdering(BuildQuery(filter, includeProperties, tracked), orderBy);
+
+        var items = await query
+            .Skip((paginationRequest.Page - 1) * paginationRequest.PageSize)
+            .Take(paginationRequest.PageSize)
+            .ToListAsync(cancellationToken);
+
+        return PagedResult<T>.Create(items, paginationRequest.Page, paginationRequest.PageSize, totalItems);
     }
 
     public async Task<T?> GetFirstOrDefaultAsync(
@@ -77,9 +95,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
 
     public async Task<int> CountAsync(Expression<Func<T, bool>>? filter = null)
     {
-        return filter is null
-            ? await DbSet.CountAsync()
-            : await DbSet.CountAsync(filter);
+        return await BuildQuery(filter, string.Empty, tracked: false).CountAsync();
     }
 
     private IQueryable<T> BuildQuery(
@@ -110,5 +126,12 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         }
 
         return query;
+    }
+
+    private static IQueryable<T> ApplyOrdering(
+        IQueryable<T> query,
+        Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy)
+    {
+        return orderBy is null ? query : orderBy(query);
     }
 }

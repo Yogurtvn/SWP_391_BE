@@ -1,3 +1,4 @@
+using RepositoryLayer.Common;
 using ServiceLayer.DTOs.Policy.Request;
 using ServiceLayer.DTOs.Policy.Response;
 
@@ -7,7 +8,10 @@ namespace ServiceLayer.Contracts.Policy;
 public interface IPolicyService
 {
     // Lấy danh sách policy có phân trang và tìm kiếm theo title
-    Task<PolicyListResponse> GetPoliciesAsync(int page, int pageSize, string? search, CancellationToken cancellationToken = default);
+    Task<PagedResult<PolicyDtoResponse>> GetPoliciesAsync(
+        PaginationRequest paginationRequest,
+        string? search,
+        CancellationToken cancellationToken = default);
 
     // Lấy chi tiết 1 policy theo ID, trả về null nếu không tìm thấy
     Task<PolicyDtoResponse?> GetPolicyByIdAsync(int policyId, CancellationToken cancellationToken = default);

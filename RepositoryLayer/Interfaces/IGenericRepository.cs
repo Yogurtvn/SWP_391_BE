@@ -1,3 +1,4 @@
+using RepositoryLayer.Common;
 using System.Linq.Expressions;
 
 namespace RepositoryLayer.Interfaces;
@@ -13,6 +14,14 @@ public interface IGenericRepository<T> where T : class
         Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
         string includeProperties = "",
         bool tracked = true);
+
+    Task<PagedResult<T>> GetPagedAsync(
+        PaginationRequest paginationRequest,
+        Expression<Func<T, bool>>? filter = null,
+        Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
+        string includeProperties = "",
+        bool tracked = false,
+        CancellationToken cancellationToken = default);
 
     Task<T?> GetFirstOrDefaultAsync(
         Expression<Func<T, bool>> filter,
