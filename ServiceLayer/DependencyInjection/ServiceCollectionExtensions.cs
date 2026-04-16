@@ -5,6 +5,7 @@ using ServiceLayer.Contracts.Auth;
 using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Policy;
+using ServiceLayer.Contracts.Report;
 using ServiceLayer.Contracts.Security;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.Security;
@@ -12,6 +13,7 @@ using ServiceLayer.Services.Auth;
 using ServiceLayer.Services.InventoryManagement;
 using ServiceLayer.Services.Orders;
 using ServiceLayer.Services.Policy;
+using ServiceLayer.Services.ReportManagement;
 using ServiceLayer.Services.StockReceiptManagement;
 
 namespace ServiceLayer.DependencyInjection;
@@ -28,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPolicyService, PolicyService>();
         services.AddScoped<IInventoryService, InventoryService>(); // Đăng ký InventoryService vào DI container
         services.AddScoped<IStockReceiptService, StockReceiptService>(); // Đăng ký StockReceiptService vào DI container
+        services.AddScoped<IReportService, ReportService>(); // Đăng ký ReportService vào DI container
         return services;
     }
 }
