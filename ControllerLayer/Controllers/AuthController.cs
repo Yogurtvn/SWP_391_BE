@@ -6,7 +6,7 @@ using System.Security.Claims;
 
 namespace ControllerLayer.Controllers;
 
-[Route("api/[controller]")]
+[Route("api/auth")]
 [ApiController]
 public class AuthController(IAuthService authService) : ControllerBase
 {
