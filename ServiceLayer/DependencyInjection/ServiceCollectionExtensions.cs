@@ -2,11 +2,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RepositoryLayer.DependencyInjection;
 using ServiceLayer.Contracts.Auth;
+using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Policy;
 using ServiceLayer.Contracts.Security;
 using ServiceLayer.Security;
 using ServiceLayer.Services.Auth;
+using ServiceLayer.Services.InventoryManagement;
 using ServiceLayer.Services.Orders;
 using ServiceLayer.Services.Policy;
 
@@ -22,6 +24,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
         services.AddScoped<IPolicyService, PolicyService>();
+        services.AddScoped<IInventoryService, InventoryService>(); // Đăng ký InventoryService vào DI container
         return services;
     }
 }
