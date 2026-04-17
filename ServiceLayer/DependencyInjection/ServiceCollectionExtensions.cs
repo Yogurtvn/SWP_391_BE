@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RepositoryLayer.DependencyInjection;
 using ServiceLayer.Contracts.Auth;
+using ServiceLayer.Contracts.Cart;
 using ServiceLayer.Contracts.Category;
 using ServiceLayer.Contracts.UserManagement;
 using ServiceLayer.Contracts.Inventory;
@@ -15,6 +16,7 @@ using ServiceLayer.Contracts.Security;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.Security;
 using ServiceLayer.Services.Auth;
+using ServiceLayer.Services.CartManagement;
 using ServiceLayer.Services.CategoryManagement;
 using ServiceLayer.Services.UserManagement;
 using ServiceLayer.Services.InventoryManagement;
@@ -34,6 +36,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddRepositoryLayer(configuration);
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<ICartService, CartService>();
         services.AddScoped<IOrderService, OrderService>();
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
