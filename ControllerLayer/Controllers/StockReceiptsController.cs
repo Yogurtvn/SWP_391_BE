@@ -4,73 +4,87 @@ using RepositoryLayer.Common;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.DTOs.StockReceipt.Request;
 using ServiceLayer.DTOs.StockReceipt.Response;
+using System.Security.Claims;
 
 namespace ControllerLayer.Controllers;
 
-[Route("api/stock-receipts")]  // Route mặc định: /api/stock-receipts
-[ApiController]                 // Tự động validate model state và trả 400 nếu invalid
+[Route("api/stock-receipts")]
+[ApiController]
 public class StockReceiptsController(IStockReceiptService stockReceiptService) : ControllerBase
 {
-    private readonly IStockReceiptService _stockReceiptService = stockReceiptService; // Inject service qua primary constructor
+    private readonly IStockReceiptService _stockReceiptService = stockReceiptService;
 
-    // POST /api/stock-receipts
-    // Ghi nhận nhập thêm hàng
-    [AllowAnonymous]  // Tạm thời cho phép tất cả (sau này sẽ đổi thành [Authorize(Roles = "Admin,Staff")])
+    [Authorize(Roles = "Admin,Staff")]
     [HttpPost]
     public async Task<ActionResult<StockReceiptDtoResponse>> CreateStockReceipt(
-        [FromBody] CreateStockReceiptRequest request,      // Nhận request body chứa variantId, quantityReceived, note
+        [FromBody] CreateStockReceiptRequest request,
         CancellationToken cancellationToken)
     {
+        if (!TryGetCurrentUserId(out var staffId))
+        {
+            return Unauthorized(new { message = "User id claim is missing or invalid." });
+        }
+
         try
         {
-            var result = await _stockReceiptService.CreateStockReceiptAsync(request, cancellationToken); // Gọi service tạo phiếu nhập
-            return Ok(result);                             // 200 OK trả về thông tin phiếu nhập vừa tạo
+            var result = await _stockReceiptService.CreateStockReceiptAsync(request, staffId, cancellationToken);
+            return Ok(result);
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new { message = ex.Message }); // 404 nếu VariantId không tồn tại
+            return NotFound(new { message = ex.Message });
         }
     }
 
-    // GET /api/stock-receipts?page=1&pageSize=20&variantId=10&staffId=5&fromDate=2026-01-01&toDate=2026-12-31
-    // Xem lịch sử nhập hàng có phân trang và lọc
-    [AllowAnonymous]  // Tạm thời cho phép tất cả (sau này sẽ đổi thành [Authorize(Roles = "Admin,Staff")])
+    [AllowAnonymous]
     [HttpGet]
     public async Task<ActionResult<PagedResult<StockReceiptListDtoResponse>>> GetStockReceipts(
-        [FromQuery] int page = 1,                          // Trang hiện tại, mặc định = 1
-        [FromQuery] int pageSize = 20,                     // Số item mỗi trang, mặc định = 20
-        [FromQuery] int? variantId = null,                 // Lọc theo variant cụ thể (optional)
-        [FromQuery] int? staffId = null,                   // Lọc theo nhân viên nhập (optional)
-        [FromQuery] DateTime? fromDate = null,             // Lọc từ ngày (optional)
-        [FromQuery] DateTime? toDate = null,               // Lọc đến ngày (optional)
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] int? variantId = null,
+        [FromQuery] int? staffId = null,
+        [FromQuery] DateTime? fromDate = null,
+        [FromQuery] DateTime? toDate = null,
         CancellationToken cancellationToken = default)
     {
-        if (page < 1) page = 1;                            // Đảm bảo page không âm
-        if (pageSize < 1) pageSize = 20;                   // Đảm bảo pageSize hợp lệ
+        if (page < 1)
+        {
+            page = 1;
+        }
+
+        if (pageSize < 1)
+        {
+            pageSize = 20;
+        }
 
         var result = await _stockReceiptService.GetStockReceiptsAsync(
-            new PaginationRequest(page, pageSize),         // Tạo PaginationRequest với page và pageSize
-            variantId,                                     // Truyền filter variantId
-            staffId,                                       // Truyền filter staffId
-            fromDate,                                      // Truyền filter fromDate
-            toDate,                                        // Truyền filter toDate
+            new PaginationRequest(page, pageSize),
+            variantId,
+            staffId,
+            fromDate,
+            toDate,
             cancellationToken);
-        return Ok(result);                                 // Trả về 200 OK với danh sách stock receipt phân trang
+
+        return Ok(result);
     }
 
-    // GET /api/stock-receipts/{receiptId}
-    // Lấy chi tiết 1 stock receipt
-    [AllowAnonymous]  // Tạm thời cho phép tất cả (sau này sẽ đổi thành [Authorize(Roles = "Admin,Staff")])
-    [HttpGet("{receiptId:int}")]  // Route constraint: receiptId phải là số nguyên
+    [AllowAnonymous]
+    [HttpGet("{receiptId:int}")]
     public async Task<ActionResult<StockReceiptDtoResponse>> GetStockReceipt(int receiptId, CancellationToken cancellationToken)
     {
-        var result = await _stockReceiptService.GetStockReceiptByIdAsync(receiptId, cancellationToken); // Gọi service lấy chi tiết
+        var result = await _stockReceiptService.GetStockReceiptByIdAsync(receiptId, cancellationToken);
 
         if (result is null)
         {
-            return NotFound(new { message = "Stock receipt not found." }); // 404 nếu không tìm thấy
+            return NotFound(new { message = "Stock receipt not found." });
         }
 
-        return Ok(result);                                 // 200 OK với chi tiết stock receipt
+        return Ok(result);
+    }
+
+    private bool TryGetCurrentUserId(out int userId)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return int.TryParse(userIdClaim, out userId);
     }
 }

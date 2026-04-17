@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
@@ -6,7 +8,7 @@ using ServiceLayer.DTOs.Orders;
 
 namespace ServiceLayer.Services.Orders;
 
-public class OrderService(IUnitOfWork unitOfWork) : IOrderService
+public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbContext) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses =
     [
@@ -48,6 +50,7 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
     };
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly OnlineEyewearDbContext _dbContext = dbContext;
 
     public async Task<OrderDetailResponse> CheckoutReadyOrderAsync(
         int userId,
@@ -77,20 +80,10 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
             throw new KeyNotFoundException("Authenticated user was not found or is inactive.");
         }
 
-        var variantIds = requestedItems.Select(item => item.VariantId).ToHashSet();
-        var variants = (await variantRepository.FindAsync(
-            variant => variantIds.Contains(variant.VariantId),
-            includeProperties: "Product,Inventory"))
+        var checkoutItems = requestedItems
+            .OrderBy(item => item.VariantId)
             .ToList();
-
-        if (variants.Count != variantIds.Count)
-        {
-            var foundVariantIds = variants.Select(variant => variant.VariantId).ToHashSet();
-            var missingVariantIds = variantIds.Where(variantId => !foundVariantIds.Contains(variantId));
-            throw new KeyNotFoundException($"Variant not found: {string.Join(", ", missingVariantIds)}.");
-        }
-
-        var variantsById = variants.ToDictionary(variant => variant.VariantId);
+        var variantIds = checkoutItems.Select(item => item.VariantId).ToHashSet();
         var now = DateTime.UtcNow;
         var totalAmount = 0m;
         var order = new Order
@@ -107,56 +100,82 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
             UpdatedAt = now
         };
 
-        foreach (var requestedItem in requestedItems)
-        {
-            var variant = variantsById[requestedItem.VariantId];
-
-            ValidateVariantForReadyOrder(variant, requestedItem.Quantity);
-
-            var lineTotal = variant.Price * requestedItem.Quantity;
-            totalAmount += lineTotal;
-
-            order.OrderItems.Add(new OrderItem
-            {
-                VariantId = variant.VariantId,
-                Variant = variant,
-                Quantity = requestedItem.Quantity,
-                SelectedColor = requestedItem.SelectedColor ?? variant.Color,
-                UnitPrice = variant.Price
-            });
-
-            variant.Inventory!.Quantity -= requestedItem.Quantity;
-        }
-
-        var payment = new Payment
-        {
-            Amount = totalAmount,
-            PaymentMethod = paymentMethod,
-            PaymentStatus = PaymentStatus.Pending,
-            PaymentHistories =
-            [
-                new PaymentHistory
-                {
-                    PaymentStatus = PaymentStatus.Pending,
-                    Notes = "Order checkout created.",
-                    CreatedAt = now
-                }
-            ]
-        };
-
-        order.TotalAmount = totalAmount;
-        order.Payments.Add(payment);
-        order.OrderStatusHistories.Add(new OrderStatusHistory
-        {
-            OrderStatus = OrderStatus.Pending,
-            UpdatedByUserId = userId,
-            Note = "Order created by customer.",
-            UpdatedAt = now
-        });
-
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+            var variants = (await variantRepository.FindAsync(
+                variant => variantIds.Contains(variant.VariantId),
+                includeProperties: "Product,Inventory",
+                tracked: true))
+                .ToList();
+
+            if (variants.Count != variantIds.Count)
+            {
+                var foundVariantIds = variants.Select(variant => variant.VariantId).ToHashSet();
+                var missingVariantIds = variantIds.Where(variantId => !foundVariantIds.Contains(variantId));
+                throw new KeyNotFoundException($"Variant not found: {string.Join(", ", missingVariantIds)}.");
+            }
+
+            var variantsById = variants.ToDictionary(variant => variant.VariantId);
+
+            foreach (var requestedItem in checkoutItems)
+            {
+                var variant = variantsById[requestedItem.VariantId];
+
+                ValidateVariantForReadyOrder(variant);
+
+                var inventoryDeducted = await TryDeductInventoryAsync(
+                    variant.VariantId,
+                    requestedItem.Quantity,
+                    cancellationToken);
+
+                if (!inventoryDeducted)
+                {
+                    var availableQuantity = await GetAvailableInventoryQuantityAsync(variant.VariantId, cancellationToken);
+                    throw new InvalidOperationException(
+                        $"Variant {variant.VariantId} only has {availableQuantity} item(s) in stock.");
+                }
+
+                var lineTotal = variant.Price * requestedItem.Quantity;
+                totalAmount += lineTotal;
+
+                order.OrderItems.Add(new OrderItem
+                {
+                    VariantId = variant.VariantId,
+                    Variant = variant,
+                    Quantity = requestedItem.Quantity,
+                    SelectedColor = requestedItem.SelectedColor ?? variant.Color,
+                    UnitPrice = variant.Price
+                });
+            }
+
+            var payment = new Payment
+            {
+                Amount = totalAmount,
+                PaymentMethod = paymentMethod,
+                PaymentStatus = PaymentStatus.Pending,
+                PaymentHistories =
+                [
+                    new PaymentHistory
+                    {
+                        PaymentStatus = PaymentStatus.Pending,
+                        Notes = "Order checkout created.",
+                        CreatedAt = now
+                    }
+                ]
+            };
+
+            order.TotalAmount = totalAmount;
+            order.Payments.Add(payment);
+            order.OrderStatusHistories.Add(new OrderStatusHistory
+            {
+                OrderStatus = OrderStatus.Pending,
+                UpdatedByUserId = userId,
+                Note = "Order created by customer.",
+                UpdatedAt = now
+            });
+
             await orderRepository.AddAsync(order);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
@@ -452,7 +471,28 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
         return preparedItems;
     }
 
-    private static void ValidateVariantForReadyOrder(ProductVariant variant, int requestedQuantity)
+    private async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken)
+    {
+        var affectedRows = await _dbContext.Inventory
+            .Where(inventory => inventory.VariantId == variantId && inventory.Quantity >= requestedQuantity)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(
+                    inventory => inventory.Quantity,
+                    inventory => inventory.Quantity - requestedQuantity),
+                cancellationToken);
+
+        return affectedRows == 1;
+    }
+
+    private async Task<int> GetAvailableInventoryQuantityAsync(int variantId, CancellationToken cancellationToken)
+    {
+        return await _dbContext.Inventory
+            .Where(inventory => inventory.VariantId == variantId)
+            .Select(inventory => (int?)inventory.Quantity)
+            .SingleOrDefaultAsync(cancellationToken) ?? 0;
+    }
+
+    private static void ValidateVariantForReadyOrder(ProductVariant variant)
     {
         if (!variant.IsActive || !variant.Product.IsActive)
         {
@@ -462,12 +502,6 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
         if (variant.Inventory is null)
         {
             throw new InvalidOperationException($"Variant {variant.VariantId} does not have inventory configured.");
-        }
-
-        if (variant.Inventory.Quantity < requestedQuantity)
-        {
-            throw new InvalidOperationException(
-                $"Variant {variant.VariantId} only has {variant.Inventory.Quantity} item(s) in stock.");
         }
     }
 
