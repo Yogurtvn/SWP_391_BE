@@ -129,7 +129,12 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
         modelBuilder.Entity<CartPrescriptionDetail>(entity =>
         {
-            entity.ToTable("CartPrescriptionDetails");
+            entity.ToTable("CartPrescriptionDetails", table =>
+            {
+                table.HasCheckConstraint("CK_CartPrescriptionDetails_Axis_Left", "[Axis_Left] BETWEEN 0 AND 180");
+                table.HasCheckConstraint("CK_CartPrescriptionDetails_Axis_Right", "[Axis_Right] BETWEEN 0 AND 180");
+                table.HasCheckConstraint("CK_CartPrescriptionDetails_PD", "[PD] > 0");
+            });
             entity.HasKey(x => x.CartPrescriptionId);
 
             entity.Property(x => x.LensTypeCode).HasMaxLength(50);
@@ -165,6 +170,9 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.ToTable("PrescriptionSpecs", table =>
             {
                 table.HasCheckConstraint("CK_PrescriptionSpecs_PrescriptionStatus", "[PrescriptionStatus] IN (1, 2, 3, 4, 5, 6)");
+                table.HasCheckConstraint("CK_PrescriptionSpecs_Axis_Left", "[Axis_Left] BETWEEN 0 AND 180");
+                table.HasCheckConstraint("CK_PrescriptionSpecs_Axis_Right", "[Axis_Right] BETWEEN 0 AND 180");
+                table.HasCheckConstraint("CK_PrescriptionSpecs_PD", "[PD] > 0");
             });
 
             entity.HasKey(x => x.PrescriptionId);
@@ -267,6 +275,10 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.ImageUrl).HasMaxLength(500).IsRequired();
             entity.Property(x => x.DisplayOrder).HasDefaultValue(1);
             entity.Property(x => x.IsPrimary).HasDefaultValue(false);
+
+            entity.HasIndex(x => x.ProductId, "IX_ProductImages_ProductId_IsPrimary")
+                .IsUnique()
+                .HasFilter("[IsPrimary] = 1");
 
             entity.HasOne(x => x.Product)
                 .WithMany(x => x.Images)
