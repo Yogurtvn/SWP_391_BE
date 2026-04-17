@@ -22,19 +22,19 @@ public class PrescriptionSpec
 
     public decimal TotalLensPrice { get; set; }
 
-    public decimal? SphLeft { get; set; }
+    public decimal SphLeft { get; set; }
 
-    public decimal? SphRight { get; set; }
+    public decimal SphRight { get; set; }
 
-    public decimal? CylLeft { get; set; }
+    public decimal CylLeft { get; set; }
 
-    public decimal? CylRight { get; set; }
+    public decimal CylRight { get; set; }
 
-    public int? AxisLeft { get; set; }
+    public int AxisLeft { get; set; }
 
-    public int? AxisRight { get; set; }
+    public int AxisRight { get; set; }
 
-    public decimal? Pd { get; set; }
+    public decimal Pd { get; set; }
 
     public string? PrescriptionImage { get; set; }
 
