@@ -2,6 +2,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RepositoryLayer.DependencyInjection;
 using ServiceLayer.Contracts.Auth;
+using ServiceLayer.Contracts.Category;
+using ServiceLayer.Contracts.UserManagement;
 using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Policy;
@@ -13,6 +15,8 @@ using ServiceLayer.Contracts.Security;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.Security;
 using ServiceLayer.Services.Auth;
+using ServiceLayer.Services.CategoryManagement;
+using ServiceLayer.Services.UserManagement;
 using ServiceLayer.Services.InventoryManagement;
 using ServiceLayer.Services.Orders;
 using ServiceLayer.Services.Policy;
@@ -40,6 +44,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInventoryService, InventoryService>(); // Đăng ký InventoryService vào DI container
         services.AddScoped<IStockReceiptService, StockReceiptService>(); // Đăng ký StockReceiptService vào DI container
         services.AddScoped<IReportService, ReportService>(); // Đăng ký ReportService vào DI container
+        services.AddScoped<IUserService, UserService>(); // Đăng ký UserService vào DI container
+        services.AddScoped<ICategoryService, CategoryService>(); // Đăng ký CategoryService vào DI container
         return services;
     }
 }
