@@ -107,6 +107,8 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant");
         }
 
+        ValidateStandardOrderRequest(variant, orderType, quantity);
+
         var now = DateTime.UtcNow;
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
 
@@ -170,12 +172,19 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             cartItemId,
             CartItemType.Standard,
             tracked: true,
-            includeProperties: "Cart");
+            includeProperties: "Cart,Variant.Product,Variant.Inventory");
 
         if (cartItem is null)
         {
             throw new ApiException((int)HttpStatusCode.NotFound, "CART_ITEM_NOT_FOUND", "Cart item not found");
         }
+
+        if (cartItem.Variant is null)
+        {
+            throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant", "Invalid cart item data");
+        }
+
+        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity);
 
         cartItem.Quantity = quantity;
         cartItem.TotalPrice = cartItem.UnitPrice * quantity;
@@ -490,7 +499,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             variant => variant.VariantId == variantId
                 && variant.IsActive
                 && variant.Product.IsActive,
-            includeProperties: "Product",
+            includeProperties: "Product,Inventory",
             tracked: false);
     }
 
@@ -756,6 +765,30 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             "preorder" => OrderType.PreOrder,
             _ => throw CreateInvalidCartItemException("orderType", "orderType must be 'ready' or 'preOrder'")
         };
+    }
+
+    private static void ValidateStandardOrderRequest(ProductVariant variant, OrderType orderType, int quantity)
+    {
+        if (variant.Inventory is null)
+        {
+            throw CreateInvalidCartItemException(
+                "variantId",
+                "variantId must reference a variant with inventory configured");
+        }
+
+        if (orderType == OrderType.Ready && variant.Inventory.Quantity < quantity)
+        {
+            throw CreateInvalidCartItemException(
+                "quantity",
+                $"Only {variant.Inventory.Quantity} item(s) are currently available for ready order");
+        }
+
+        if (orderType == OrderType.PreOrder && !variant.Inventory.IsPreOrderAllowed)
+        {
+            throw CreateInvalidCartItemException(
+                "orderType",
+                "preOrder is not allowed for this variant");
+        }
     }
 
     private static void ValidateAxis(int axis, string field)

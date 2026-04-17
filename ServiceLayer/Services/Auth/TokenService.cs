@@ -3,6 +3,7 @@ using Microsoft.IdentityModel.Tokens;
 using RepositoryLayer.Entities;
 using ServiceLayer.Contracts.Auth;
 using System.IdentityModel.Tokens.Jwt;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text;
 
@@ -10,7 +11,6 @@ namespace ServiceLayer.Services.Auth;
 
 public class TokenService(IConfiguration configuration) : ITokenService
 {
-    private const string TokenTypeClaim = "token_type";
     private const string AccessTokenType = "access";
     private const string RefreshTokenType = "refresh";
 
@@ -24,7 +24,8 @@ public class TokenService(IConfiguration configuration) : ITokenService
             new(ClaimTypes.Email, user.Email),
             new(ClaimTypes.Name, user.FullName ?? string.Empty),
             new(ClaimTypes.Role, user.Role.ToString()),
-            new(TokenTypeClaim, AccessTokenType)
+            new(TokenClaimNames.TokenType, AccessTokenType),
+            new(TokenClaimNames.TokenVersion, user.TokenVersion.ToString(CultureInfo.InvariantCulture))
         };
 
         return GenerateToken(claims, DateTime.UtcNow.AddMinutes(GetAccessExpiryInMinutes()));
@@ -36,7 +37,8 @@ public class TokenService(IConfiguration configuration) : ITokenService
         {
             new(ClaimTypes.NameIdentifier, user.UserId.ToString()),
             new(ClaimTypes.Email, user.Email),
-            new(TokenTypeClaim, RefreshTokenType)
+            new(TokenClaimNames.TokenType, RefreshTokenType),
+            new(TokenClaimNames.TokenVersion, user.TokenVersion.ToString(CultureInfo.InvariantCulture))
         };
 
         return GenerateToken(claims, DateTime.UtcNow.AddDays(GetRefreshExpiryInDays()));
@@ -58,7 +60,7 @@ public class TokenService(IConfiguration configuration) : ITokenService
                 BuildTokenValidationParameters(validateLifetime: true),
                 out _);
 
-            var tokenType = principal.FindFirst(TokenTypeClaim)?.Value;
+            var tokenType = principal.FindFirst(TokenClaimNames.TokenType)?.Value;
             return string.Equals(tokenType, RefreshTokenType, StringComparison.Ordinal)
                 ? principal
                 : null;
