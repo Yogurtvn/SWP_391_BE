@@ -1,6 +1,6 @@
 namespace ServiceLayer.DTOs.Auth;
 
-public class AuthUserResponse
+public class RegisterResponse
 {
     public int UserId { get; set; }
 

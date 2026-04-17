@@ -2,30 +2,28 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ServiceLayer.Contracts.Auth;
 using ServiceLayer.DTOs.Auth;
-using System.Security.Claims;
+using ServiceLayer.Exceptions;
 
 namespace ControllerLayer.Controllers;
 
 [Route("api/auth")]
 [ApiController]
-public class AuthController(IAuthService authService) : ControllerBase
+public class AuthController(IAuthService authService) : ApiControllerBase
 {
     private readonly IAuthService _authService = authService;
 
     [AllowAnonymous]
     [HttpPost("register")]
-    public async Task<ActionResult<AuthResponse>> Register([FromBody] RegisterRequest request, CancellationToken cancellationToken)
+    public async Task<ActionResult<RegisterResponse>> Register([FromBody] RegisterRequest request, CancellationToken cancellationToken)
     {
         try
         {
             var result = await _authService.RegisterAsync(request, cancellationToken);
-
-            if (result is null)
-            {
-                return Conflict(new { message = "Email is already registered." });
-            }
-
             return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
         }
         catch (InvalidOperationException exception)
         {
@@ -40,13 +38,11 @@ public class AuthController(IAuthService authService) : ControllerBase
         try
         {
             var result = await _authService.LoginAsync(request, cancellationToken);
-
-            if (result is null)
-            {
-                return Unauthorized(new { message = "Invalid email or password." });
-            }
-
             return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
         }
         catch (InvalidOperationException exception)
         {
@@ -61,13 +57,11 @@ public class AuthController(IAuthService authService) : ControllerBase
         try
         {
             var result = await _authService.LoginWithGoogleAsync(request.Credential, cancellationToken);
-
-            if (result is null)
-            {
-                return Unauthorized(new { message = "Google credential is invalid or the account cannot be linked." });
-            }
-
             return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
         }
         catch (InvalidOperationException exception)
         {
@@ -75,26 +69,59 @@ public class AuthController(IAuthService authService) : ControllerBase
         }
         catch (Google.Apis.Auth.InvalidJwtException)
         {
-            return Unauthorized(new { message = "Google credential is invalid." });
+            return Unauthorized(new { errorCode = "INVALID_CREDENTIALS", message = "Google credential is invalid." });
+        }
+    }
+
+    [AllowAnonymous]
+    [HttpPost("refresh-tokens")]
+    public async Task<ActionResult<RefreshTokenResponse>> RefreshTokens([FromBody] RefreshTokenRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _authService.RefreshTokensAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
+    }
+
+    [Authorize(Roles = "Admin,Staff,Customer")]
+    [HttpPost("logout")]
+    public async Task<ActionResult<LogoutResponse>> Logout([FromBody] LogoutRequest request, CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized(new { errorCode = "UNAUTHORIZED", message = "Authentication required" });
+        }
+
+        try
+        {
+            var result = await _authService.LogoutAsync(userId, request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
         }
     }
 
     [Authorize]
     [HttpGet("me")]
-    public async Task<ActionResult<AuthUserResponse>> Me(CancellationToken cancellationToken)
+    public async Task<ActionResult<CurrentUserResponse>> Me(CancellationToken cancellationToken)
     {
-        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-
-        if (!int.TryParse(userIdClaim, out var userId))
+        if (!TryGetCurrentUserId(out var userId))
         {
-            return Unauthorized(new { message = "User id claim is missing or invalid." });
+            return Unauthorized(new { errorCode = "UNAUTHORIZED", message = "Authentication required" });
         }
 
         var result = await _authService.GetCurrentUserAsync(userId, cancellationToken);
 
         if (result is null)
         {
-            return NotFound(new { message = "User not found." });
+            return Unauthorized(new { errorCode = "UNAUTHORIZED", message = "Authentication required" });
         }
 
         return Ok(result);
