@@ -11,9 +11,19 @@ var builder = WebApplication.CreateBuilder(args);
 var jwtIssuer = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Issuer");
 var jwtAudience = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Audience");
 var jwtKey = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Key");
+var corsAllowedOrigins = GetCorsAllowedOrigins(builder.Configuration);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy =>
+    {
+        policy.WithOrigins(corsAllowedOrigins)
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
 builder.Services.AddSwaggerGen(options =>
 {
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -85,7 +95,12 @@ if (app.Environment.IsDevelopment())
 
 app.UseStaticFiles();
 
-app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
+app.UseCors("Frontend");
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -104,4 +119,22 @@ static string GetRequiredConfigurationValue(IConfiguration configuration, string
     }
 
     return value;
+}
+
+static string[] GetCorsAllowedOrigins(IConfiguration configuration)
+{
+    var configuredOrigins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+
+    if (configuredOrigins is { Length: > 0 })
+    {
+        return configuredOrigins;
+    }
+
+    return
+    [
+        "http://localhost:5173",
+        "https://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://127.0.0.1:5173"
+    ];
 }
