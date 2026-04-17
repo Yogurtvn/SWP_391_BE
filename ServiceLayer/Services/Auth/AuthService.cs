@@ -6,6 +6,9 @@ using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Auth;
 using ServiceLayer.Contracts.Security;
 using ServiceLayer.DTOs.Auth;
+using ServiceLayer.Exceptions;
+using System.Net;
+using System.Security.Claims;
 
 namespace ServiceLayer.Services.Auth;
 
@@ -20,7 +23,7 @@ public class AuthService(
     private readonly IPasswordHasher _passwordHasher = passwordHasher;
     private readonly IConfiguration _configuration = configuration;
 
-    public async Task<AuthResponse?> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
+    public async Task<RegisterResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
     {
         var userRepository = _unitOfWork.Repository<User>();
         var normalizedEmail = NormalizeEmail(request.Email);
@@ -31,7 +34,7 @@ public class AuthService(
 
         if (existingUser is not null)
         {
-            return null;
+            throw new ApiException((int)HttpStatusCode.Conflict, "EMAIL_ALREADY_EXISTS", "Email already exists");
         }
 
         var user = new User
@@ -48,10 +51,15 @@ public class AuthService(
         await userRepository.AddAsync(user);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return BuildAuthResponse(user);
+        return new RegisterResponse
+        {
+            UserId = user.UserId,
+            Email = user.Email,
+            Role = ToApiEnum(user.Role)
+        };
     }
 
-    public async Task<AuthResponse?> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    public async Task<AuthResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
         var userRepository = _unitOfWork.Repository<User>();
         var normalizedEmail = NormalizeEmail(request.Email);
@@ -61,18 +69,18 @@ public class AuthService(
 
         if (user is null || !user.IsActive)
         {
-            return null;
+            throw new ApiException((int)HttpStatusCode.Unauthorized, "INVALID_CREDENTIALS", "Invalid email or password");
         }
 
         if (!_passwordHasher.Verify(request.Password, user.PasswordHash))
         {
-            return null;
+            throw new ApiException((int)HttpStatusCode.Unauthorized, "INVALID_CREDENTIALS", "Invalid email or password");
         }
 
         return BuildAuthResponse(user);
     }
 
-    public async Task<AuthResponse?> LoginWithGoogleAsync(string credential, CancellationToken cancellationToken = default)
+    public async Task<AuthResponse> LoginWithGoogleAsync(string credential, CancellationToken cancellationToken = default)
     {
         var googleClientId = GetRequiredConfigurationValue("GoogleAuth:ClientId");
         var validationSettings = new GoogleJsonWebSignature.ValidationSettings
@@ -84,7 +92,7 @@ public class AuthService(
 
         if (string.IsNullOrWhiteSpace(payload.Email) || string.IsNullOrWhiteSpace(payload.Subject))
         {
-            return null;
+            throw new ApiException((int)HttpStatusCode.Unauthorized, "INVALID_CREDENTIALS", "Google credential is invalid or the account cannot be linked.");
         }
 
         var userRepository = _unitOfWork.Repository<User>();
@@ -119,7 +127,7 @@ public class AuthService(
 
         if (!user.IsActive)
         {
-            return null;
+            throw new ApiException((int)HttpStatusCode.Unauthorized, "INVALID_CREDENTIALS", "Google credential is invalid or the account cannot be linked.");
         }
 
         if (string.IsNullOrWhiteSpace(user.GoogleSubjectId))
@@ -131,13 +139,60 @@ public class AuthService(
         }
         else if (!string.Equals(user.GoogleSubjectId, payload.Subject, StringComparison.Ordinal))
         {
-            return null;
+            throw new ApiException((int)HttpStatusCode.Unauthorized, "INVALID_CREDENTIALS", "Google credential is invalid or the account cannot be linked.");
         }
 
         return BuildAuthResponse(user);
     }
 
-    public async Task<AuthUserResponse?> GetCurrentUserAsync(int userId, CancellationToken cancellationToken = default)
+    public async Task<RefreshTokenResponse> RefreshTokensAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default)
+    {
+        var principal = _tokenService.GetPrincipalFromRefreshToken(request.RefreshToken);
+
+        if (principal is null || !int.TryParse(principal.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+        {
+            throw new ApiException(
+                (int)HttpStatusCode.Unauthorized,
+                "INVALID_REFRESH_TOKEN",
+                "Refresh token is invalid or expired");
+        }
+
+        var userRepository = _unitOfWork.Repository<User>();
+        var user = await userRepository.GetFirstOrDefaultAsync(
+            currentUser => currentUser.UserId == userId && currentUser.IsActive,
+            tracked: false);
+
+        if (user is null)
+        {
+            throw new ApiException(
+                (int)HttpStatusCode.Unauthorized,
+                "INVALID_REFRESH_TOKEN",
+                "Refresh token is invalid or expired");
+        }
+
+        return new RefreshTokenResponse
+        {
+            AccessToken = _tokenService.GenerateAccessToken(user)
+        };
+    }
+
+    public Task<LogoutResponse> LogoutAsync(int userId, LogoutRequest request, CancellationToken cancellationToken = default)
+    {
+        var principal = _tokenService.GetPrincipalFromRefreshToken(request.RefreshToken);
+
+        if (principal is null || !int.TryParse(principal.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var refreshTokenUserId) || refreshTokenUserId != userId)
+        {
+            throw new ApiException((int)HttpStatusCode.BadRequest, "LOGOUT_FAILED", "Logout failed");
+        }
+
+        // TODO: implement refresh-token revocation once blacklist/revocation strategy is finalized in API_SPEC.md.
+        return Task.FromResult(new LogoutResponse
+        {
+            Message = "Logged out successfully"
+        });
+    }
+
+    public async Task<CurrentUserResponse?> GetCurrentUserAsync(int userId, CancellationToken cancellationToken = default)
     {
         var userRepository = _unitOfWork.Repository<User>();
 
@@ -150,7 +205,13 @@ public class AuthService(
             return null;
         }
 
-        return MapUser(user);
+        return new CurrentUserResponse
+        {
+            UserId = user.UserId,
+            Email = user.Email,
+            FullName = user.FullName,
+            Role = ToApiEnum(user.Role)
+        };
     }
 
     private AuthResponse BuildAuthResponse(User user)
@@ -158,6 +219,7 @@ public class AuthService(
         return new AuthResponse
         {
             AccessToken = _tokenService.GenerateAccessToken(user),
+            RefreshToken = _tokenService.GenerateRefreshToken(user),
             User = MapUser(user)
         };
     }
@@ -168,11 +230,7 @@ public class AuthService(
         {
             UserId = user.UserId,
             Email = user.Email,
-            FullName = user.FullName,
-            Phone = user.Phone,
-            Role = user.Role.ToString(),
-            IsActive = user.IsActive,
-            HasGoogleLogin = !string.IsNullOrWhiteSpace(user.GoogleSubjectId)
+            Role = ToApiEnum(user.Role)
         };
     }
 
@@ -185,6 +243,12 @@ public class AuthService(
     {
         var normalizedPhone = phone?.Trim();
         return string.IsNullOrWhiteSpace(normalizedPhone) ? null : normalizedPhone;
+    }
+
+    private static string ToApiEnum<TEnum>(TEnum value)
+        where TEnum : struct, Enum
+    {
+        return value.ToString().ToLowerInvariant();
     }
 
     private string GetRequiredConfigurationValue(string key)
