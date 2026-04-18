@@ -79,21 +79,9 @@ public class PaymentActionResponse
     public string? QrCodeUrl { get; set; }
 }
 
-public class MomoCreateGatewayResultDto
+public class VnpayIpnResponse
 {
-    public bool IsSuccessStatusCode { get; set; }
-
-    public int HttpStatusCode { get; set; }
-
-    public string RawResponse { get; set; } = string.Empty;
-
-    public int ResultCode { get; set; }
+    public string RspCode { get; set; } = string.Empty;
 
     public string Message { get; set; } = string.Empty;
-
-    public string? PayUrl { get; set; }
-
-    public string? Deeplink { get; set; }
-
-    public string? QrCodeUrl { get; set; }
 }

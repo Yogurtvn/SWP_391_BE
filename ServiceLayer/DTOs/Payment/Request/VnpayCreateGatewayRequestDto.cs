@@ -1,6 +1,6 @@
 namespace ServiceLayer.DTOs.Payment.Request;
 
-public class MomoCreateGatewayRequestDto
+public class VnpayCreateGatewayRequestDto
 {
     public int PaymentId { get; set; }
 
@@ -11,4 +11,6 @@ public class MomoCreateGatewayRequestDto
     public decimal Amount { get; set; }
 
     public string? OrderInfo { get; set; }
+
+    public string? ClientIpAddress { get; set; }
 }

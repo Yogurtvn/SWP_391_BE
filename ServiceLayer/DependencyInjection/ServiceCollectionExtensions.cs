@@ -48,7 +48,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICatalogSupportService, CatalogSupportService>();
         services.AddScoped<IOrderService, OrderService>();
         services.AddScoped<IPaymentService, PaymentService>();
-        services.AddScoped<IMomoGatewayClient, MomoGatewayClient>();
+        services.AddScoped<IVnpayGatewayClient, VnpayGatewayClient>();
         services.AddScoped<IPrescriptionService, PrescriptionService>();
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();

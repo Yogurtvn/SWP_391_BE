@@ -16,11 +16,11 @@ namespace ServiceLayer.Services.PaymentManagement;
 public class PaymentService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IMomoGatewayClient momoGatewayClient) : IPaymentService
+    IVnpayGatewayClient vnpayGatewayClient) : IPaymentService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
-    private readonly IMomoGatewayClient _momoGatewayClient = momoGatewayClient;
+    private readonly IVnpayGatewayClient _vnpayGatewayClient = vnpayGatewayClient;
 
     public async Task<CreatePaymentResponse> CreatePaymentAsync(
         int currentUserId,
@@ -33,7 +33,11 @@ public class PaymentService(
         var orderId = request.OrderId.GetValueOrDefault();
         var requestedAmount = request.Amount;
 
-        if (orderId <= 0 || requestedAmount is null || requestedAmount < 0m || !ApiEnumMapper.TryParsePaymentMethod(request.PaymentMethod, out var paymentMethod))
+        if (orderId <= 0
+            || requestedAmount is null
+            || requestedAmount < 0m
+            || !ApiEnumMapper.TryParsePaymentMethod(request.PaymentMethod, out var paymentMethod)
+            || !IsSupportedPaymentMethod(paymentMethod))
         {
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
         }
@@ -99,7 +103,9 @@ public class PaymentService(
             }
         }
 
-        var paymentAction = await InitializeMomoPaymentAsync(payment, order, null, cancellationToken);
+        var paymentAction = payment.PaymentMethod == PaymentMethod.VNPay
+            ? await InitializeVnpayPaymentAsync(payment, order, null, cancellationToken)
+            : null;
 
         return new CreatePaymentResponse
         {
@@ -290,7 +296,7 @@ public class PaymentService(
         };
     }
 
-    public async Task<PaymentActionResponse?> InitializeMomoPaymentAsync(
+    public async Task<PaymentActionResponse?> InitializeVnpayPaymentAsync(
         Payment payment,
         Order order,
         string? orderInfo,
@@ -299,25 +305,24 @@ public class PaymentService(
         ArgumentNullException.ThrowIfNull(payment);
         ArgumentNullException.ThrowIfNull(order);
 
-        if (payment.PaymentMethod != PaymentMethod.Momo)
+        if (payment.PaymentMethod != PaymentMethod.VNPay)
         {
             return null;
         }
 
-        MomoCreateGatewayResultDto gatewayResult;
+        string payUrl;
 
         try
         {
-            gatewayResult = await _momoGatewayClient.CreatePaymentAsync(
-                new MomoCreateGatewayRequestDto
+            payUrl = _vnpayGatewayClient.CreatePaymentUrl(
+                new VnpayCreateGatewayRequestDto
                 {
                     PaymentId = payment.PaymentId,
                     OrderId = order.OrderId,
                     OrderReference = BuildPaymentReference(payment.PaymentId),
                     Amount = payment.Amount,
                     OrderInfo = orderInfo
-                },
-                cancellationToken);
+                });
         }
         catch (Exception exception)
         {
@@ -325,95 +330,99 @@ public class PaymentService(
                 payment,
                 PaymentStatus.Pending,
                 null,
-                $"MoMo initialization failed: {TruncateNote(exception.Message)}",
+                $"VNPay initialization failed: {TruncateNote(exception.Message)}",
                 cancellationToken);
 
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
         }
 
-        if (!gatewayResult.IsSuccessStatusCode || gatewayResult.ResultCode != 0)
-        {
-            var errorNote = !gatewayResult.IsSuccessStatusCode
-                ? $"MoMo HTTP error {gatewayResult.HttpStatusCode}."
-                : $"MoMo returned resultCode {gatewayResult.ResultCode}.";
-
-            await AddPaymentHistoryAsync(payment, PaymentStatus.Pending, null, errorNote, cancellationToken);
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
-        }
-
-        await AddPaymentHistoryAsync(payment, PaymentStatus.Pending, null, "MoMo payment initialized.", cancellationToken);
+        await AddPaymentHistoryAsync(payment, PaymentStatus.Pending, null, "VNPay payment initialized.", cancellationToken);
 
         return new PaymentActionResponse
         {
             PaymentId = payment.PaymentId,
             PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
-            PayUrl = gatewayResult.PayUrl,
-            Deeplink = gatewayResult.Deeplink,
-            QrCodeUrl = gatewayResult.QrCodeUrl
+            PayUrl = payUrl,
+            Deeplink = null,
+            QrCodeUrl = null
         };
     }
 
-    public async Task HandleMomoIpnAsync(MomoIpnRequest request, CancellationToken cancellationToken = default)
+    public async Task HandleVnpayReturnAsync(
+        IReadOnlyDictionary<string, string> queryParameters,
+        CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(queryParameters);
 
-        if (!_momoGatewayClient.ValidateSignature(request) || !_momoGatewayClient.IsValidPartnerCode(request.PartnerCode))
+        var resolution = await ResolveVnpayCallbackAsync(queryParameters, cancellationToken);
+
+        if (resolution.Result != VnpayCallbackResolutionResult.Valid || resolution.Payment is null)
         {
             return;
         }
 
-        if (!TryParsePaymentReference(request.OrderId, out var paymentId))
-        {
-            return;
-        }
+        await ApplyVnpayCallbackResultAsync(
+            resolution.Payment,
+            queryParameters,
+            "VNPay return",
+            cancellationToken);
+    }
 
-        var payment = await _dbContext.Payments
-            .Include(current => current.PaymentHistories)
-            .FirstOrDefaultAsync(
-                current => current.PaymentId == paymentId && current.PaymentMethod == PaymentMethod.Momo,
-                cancellationToken);
+    public async Task<VnpayIpnResponse> HandleVnpayIpnAsync(
+        IReadOnlyDictionary<string, string> queryParameters,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(queryParameters);
 
-        if (payment is null || RoundAmount(payment.Amount) != request.Amount)
-        {
-            return;
-        }
+        var resolution = await ResolveVnpayCallbackAsync(queryParameters, cancellationToken);
 
-        if (request.ResultCode == 0)
+        if (resolution.Result == VnpayCallbackResolutionResult.InvalidSignature)
         {
-            if (payment.PaymentStatus != PaymentStatus.Completed)
+            return new VnpayIpnResponse
             {
-                payment.PaymentStatus = PaymentStatus.Completed;
-                payment.PaidAt = DateTime.UtcNow;
-                payment.PaymentHistories.Add(new PaymentHistory
-                {
-                    PaymentStatus = PaymentStatus.Completed,
-                    TransactionCode = request.TransId.ToString(),
-                    Notes = "MoMo IPN confirmed payment.",
-                    CreatedAt = DateTime.UtcNow
-                });
-
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
-            }
-
-            return;
+                RspCode = "97",
+                Message = "Invalid Signature"
+            };
         }
 
-        if (payment.PaymentStatus == PaymentStatus.Completed)
+        if (resolution.Result == VnpayCallbackResolutionResult.PaymentNotFound)
         {
-            return;
+            return new VnpayIpnResponse
+            {
+                RspCode = "01",
+                Message = "Payment Not Found"
+            };
         }
 
-        payment.PaymentStatus = PaymentStatus.Failed;
-        payment.PaidAt = null;
-        payment.PaymentHistories.Add(new PaymentHistory
+        if (resolution.Result == VnpayCallbackResolutionResult.InvalidAmount)
         {
-            PaymentStatus = PaymentStatus.Failed,
-            TransactionCode = request.TransId == 0 ? null : request.TransId.ToString(),
-            Notes = TruncateNote($"MoMo IPN failed: {request.Message}"),
-            CreatedAt = DateTime.UtcNow
-        });
+            return new VnpayIpnResponse
+            {
+                RspCode = "04",
+                Message = "Invalid Amount"
+            };
+        }
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        if (resolution.Payment is null)
+        {
+            return new VnpayIpnResponse
+            {
+                RspCode = "99",
+                Message = "Unknown Error"
+            };
+        }
+
+        await ApplyVnpayCallbackResultAsync(
+            resolution.Payment,
+            queryParameters,
+            "VNPay IPN",
+            cancellationToken);
+
+        return new VnpayIpnResponse
+        {
+            RspCode = "00",
+            Message = "Confirm Success"
+        };
     }
 
     private async Task AddPaymentHistoryAsync(
@@ -432,6 +441,110 @@ public class PaymentService(
         });
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<VnpayCallbackResolution> ResolveVnpayCallbackAsync(
+        IReadOnlyDictionary<string, string> queryParameters,
+        CancellationToken cancellationToken)
+    {
+        if (!_vnpayGatewayClient.ValidateSignature(queryParameters)
+            || !_vnpayGatewayClient.IsValidTmnCode(GetQueryValue(queryParameters, "vnp_TmnCode")))
+        {
+            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.InvalidSignature, null);
+        }
+
+        if (!TryParsePaymentReference(GetQueryValue(queryParameters, "vnp_TxnRef"), out var paymentId))
+        {
+            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.PaymentNotFound, null);
+        }
+
+        var payment = await _dbContext.Payments
+            .Include(current => current.PaymentHistories)
+            .FirstOrDefaultAsync(
+                current => current.PaymentId == paymentId && current.PaymentMethod == PaymentMethod.VNPay,
+                cancellationToken);
+
+        if (payment is null)
+        {
+            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.PaymentNotFound, null);
+        }
+
+        var callbackAmount = GetQueryValue(queryParameters, "vnp_Amount");
+
+        if (!long.TryParse(callbackAmount, out var gatewayAmount)
+            || gatewayAmount != ToVnpayAmount(payment.Amount))
+        {
+            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.InvalidAmount, null);
+        }
+
+        return new VnpayCallbackResolution(VnpayCallbackResolutionResult.Valid, payment);
+    }
+
+    private async Task ApplyVnpayCallbackResultAsync(
+        Payment payment,
+        IReadOnlyDictionary<string, string> queryParameters,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var transactionCode = TruncateTransactionCode(GetQueryValue(queryParameters, "vnp_TransactionNo"));
+
+        if (IsVnpaySuccess(queryParameters))
+        {
+            if (payment.PaymentStatus == PaymentStatus.Completed)
+            {
+                return;
+            }
+
+            payment.PaymentStatus = PaymentStatus.Completed;
+            payment.PaidAt = now;
+            payment.PaymentHistories.Add(new PaymentHistory
+            {
+                PaymentStatus = PaymentStatus.Completed,
+                TransactionCode = transactionCode,
+                Notes = $"{source} confirmed payment.",
+                CreatedAt = now
+            });
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        if (payment.PaymentStatus == PaymentStatus.Completed)
+        {
+            return;
+        }
+
+        var responseCode = GetQueryValue(queryParameters, "vnp_ResponseCode") ?? "unknown";
+        var transactionStatus = GetQueryValue(queryParameters, "vnp_TransactionStatus") ?? "unknown";
+
+        payment.PaymentStatus = PaymentStatus.Failed;
+        payment.PaidAt = null;
+        payment.PaymentHistories.Add(new PaymentHistory
+        {
+            PaymentStatus = PaymentStatus.Failed,
+            TransactionCode = transactionCode,
+            Notes = TruncateNote($"{source} failed: responseCode={responseCode}, transactionStatus={transactionStatus}."),
+            CreatedAt = now
+        });
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private static string? GetQueryValue(IReadOnlyDictionary<string, string> queryParameters, string key)
+    {
+        return queryParameters.TryGetValue(key, out var value)
+            ? NormalizeText(value)
+            : null;
+    }
+
+    private static bool IsVnpaySuccess(IReadOnlyDictionary<string, string> queryParameters)
+    {
+        var responseCode = GetQueryValue(queryParameters, "vnp_ResponseCode");
+        var transactionStatus = GetQueryValue(queryParameters, "vnp_TransactionStatus");
+
+        return string.Equals(responseCode, "00", StringComparison.OrdinalIgnoreCase)
+            && (transactionStatus is null || string.Equals(transactionStatus, "00", StringComparison.OrdinalIgnoreCase));
     }
 
     private static IOrderedQueryable<Payment> ApplySorting(IQueryable<Payment> query, string? sortBy, bool descending)
@@ -507,9 +620,14 @@ public class PaymentService(
         return int.TryParse(reference["PAYMENT_".Length..], out paymentId) && paymentId > 0;
     }
 
-    private static long RoundAmount(decimal amount)
+    private static bool IsSupportedPaymentMethod(PaymentMethod paymentMethod)
     {
-        return Convert.ToInt64(Math.Round(amount, 0, MidpointRounding.AwayFromZero));
+        return paymentMethod == PaymentMethod.COD || paymentMethod == PaymentMethod.VNPay;
+    }
+
+    private static long ToVnpayAmount(decimal amount)
+    {
+        return Convert.ToInt64(Math.Round(amount * 100m, 0, MidpointRounding.AwayFromZero));
     }
 
     private static string TruncateNote(string? value)
@@ -518,8 +636,32 @@ public class PaymentService(
         return normalizedValue.Length <= 255 ? normalizedValue : normalizedValue[..255];
     }
 
+    private static string? TruncateTransactionCode(string? value)
+    {
+        var normalizedValue = NormalizeText(value);
+
+        if (normalizedValue is null)
+        {
+            return null;
+        }
+
+        return normalizedValue.Length <= 100 ? normalizedValue : normalizedValue[..100];
+    }
+
     private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)
     {
         return new ApiException((int)statusCode, errorCode, message, details);
     }
+
+    private enum VnpayCallbackResolutionResult
+    {
+        Valid,
+        InvalidSignature,
+        PaymentNotFound,
+        InvalidAmount
+    }
+
+    private sealed record VnpayCallbackResolution(
+        VnpayCallbackResolutionResult Result,
+        Payment? Payment);
 }

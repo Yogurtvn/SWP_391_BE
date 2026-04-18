@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using ServiceLayer.Contracts.Payment;
 using ServiceLayer.DTOs.Payment.Request;
@@ -125,17 +126,35 @@ public class PaymentsController(IPaymentService paymentService) : ApiControllerB
     }
 
     [AllowAnonymous]
-    [HttpPost("momo/ipn")]
-    public async Task<IActionResult> MomoIpn(
-        [FromBody] MomoIpnRequest request,
-        CancellationToken cancellationToken)
+    [HttpGet("vnpay/return")]
+    public async Task<IActionResult> VnpayReturn(CancellationToken cancellationToken)
     {
-        await _paymentService.HandleMomoIpnAsync(request, cancellationToken);
+        await _paymentService.HandleVnpayReturnAsync(ToQueryDictionary(Request.Query), cancellationToken);
         return NoContent();
+    }
+
+    [AllowAnonymous]
+    [HttpGet("vnpay/ipn")]
+    public async Task<IActionResult> VnpayIpn(CancellationToken cancellationToken)
+    {
+        var result = await _paymentService.HandleVnpayIpnAsync(ToQueryDictionary(Request.Query), cancellationToken);
+        return Content($"RspCode={result.RspCode}&Message={Uri.EscapeDataString(result.Message)}", "text/plain");
     }
 
     private bool CanAccessAllPayments()
     {
         return User.IsInRole("Admin") || User.IsInRole("Staff");
+    }
+
+    private static IReadOnlyDictionary<string, string> ToQueryDictionary(IQueryCollection query)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in query)
+        {
+            values[item.Key] = item.Value.ToString();
+        }
+
+        return values;
     }
 }
