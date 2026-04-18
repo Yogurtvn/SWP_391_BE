@@ -7,6 +7,7 @@ using ServiceLayer.Contracts.Auth;
 using ServiceLayer.Contracts.Security;
 using ServiceLayer.DTOs.Auth;
 using ServiceLayer.Exceptions;
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 
@@ -149,7 +150,9 @@ public class AuthService(
     {
         var principal = _tokenService.GetPrincipalFromRefreshToken(request.RefreshToken);
 
-        if (principal is null || !int.TryParse(principal.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+        if (principal is null
+            || !int.TryParse(principal.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId)
+            || !TryGetTokenVersion(principal, out var tokenVersion))
         {
             throw new ApiException(
                 (int)HttpStatusCode.Unauthorized,
@@ -170,26 +173,50 @@ public class AuthService(
                 "Refresh token is invalid or expired");
         }
 
+        if (user.TokenVersion != tokenVersion)
+        {
+            throw new ApiException(
+                (int)HttpStatusCode.Unauthorized,
+                "INVALID_REFRESH_TOKEN",
+                "Refresh token is invalid or expired");
+        }
+
         return new RefreshTokenResponse
         {
             AccessToken = _tokenService.GenerateAccessToken(user)
         };
     }
 
-    public Task<LogoutResponse> LogoutAsync(int userId, LogoutRequest request, CancellationToken cancellationToken = default)
+    public async Task<LogoutResponse> LogoutAsync(int userId, LogoutRequest request, CancellationToken cancellationToken = default)
     {
         var principal = _tokenService.GetPrincipalFromRefreshToken(request.RefreshToken);
 
-        if (principal is null || !int.TryParse(principal.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var refreshTokenUserId) || refreshTokenUserId != userId)
+        if (principal is null
+            || !int.TryParse(principal.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var refreshTokenUserId)
+            || !TryGetTokenVersion(principal, out var tokenVersion)
+            || refreshTokenUserId != userId)
         {
             throw new ApiException((int)HttpStatusCode.BadRequest, "LOGOUT_FAILED", "Logout failed");
         }
 
-        // TODO: implement refresh-token revocation once blacklist/revocation strategy is finalized in API_SPEC.md.
-        return Task.FromResult(new LogoutResponse
+        var userRepository = _unitOfWork.Repository<User>();
+        var user = await userRepository.GetFirstOrDefaultAsync(
+            currentUser => currentUser.UserId == userId && currentUser.IsActive,
+            tracked: true);
+
+        if (user is null || user.TokenVersion != tokenVersion)
+        {
+            throw new ApiException((int)HttpStatusCode.BadRequest, "LOGOUT_FAILED", "Logout failed");
+        }
+
+        user.TokenVersion++;
+        userRepository.Update(user);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return new LogoutResponse
         {
             Message = "Logged out successfully"
-        });
+        };
     }
 
     public async Task<CurrentUserResponse?> GetCurrentUserAsync(int userId, CancellationToken cancellationToken = default)
@@ -197,7 +224,7 @@ public class AuthService(
         var userRepository = _unitOfWork.Repository<User>();
 
         var user = await userRepository.GetFirstOrDefaultAsync(
-            currentUser => currentUser.UserId == userId,
+            currentUser => currentUser.UserId == userId && currentUser.IsActive,
             tracked: false);
 
         if (user is null)
@@ -261,5 +288,19 @@ public class AuthService(
         }
 
         return value;
+    }
+
+    private static bool TryGetTokenVersion(ClaimsPrincipal principal, out int tokenVersion)
+    {
+        var rawTokenVersion = principal.FindFirst(TokenClaimNames.TokenVersion)?.Value;
+
+        if (string.IsNullOrWhiteSpace(rawTokenVersion))
+        {
+            tokenVersion = 0;
+            return true;
+        }
+
+        return int.TryParse(rawTokenVersion, NumberStyles.None, CultureInfo.InvariantCulture, out tokenVersion)
+            && tokenVersion >= 0;
     }
 }

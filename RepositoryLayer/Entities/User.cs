@@ -22,6 +22,8 @@ public class User
 
     public bool IsActive { get; set; }
 
+    public int TokenVersion { get; set; }
+
     public Cart? Cart { get; set; }
 
     public ICollection<Order> Orders { get; set; } = [];

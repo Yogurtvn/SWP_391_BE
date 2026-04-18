@@ -73,6 +73,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.Role).HasColumnType("tinyint");
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
             entity.Property(x => x.IsActive).HasDefaultValue(true);
+            entity.Property(x => x.TokenVersion).HasDefaultValue(0);
 
             entity.HasIndex(x => x.Email).IsUnique();
             entity.HasIndex(x => x.GoogleSubjectId)

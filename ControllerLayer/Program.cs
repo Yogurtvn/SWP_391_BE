@@ -4,7 +4,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using RepositoryLayer.Data;
+using ServiceLayer.Contracts.Auth;
 using ServiceLayer.DependencyInjection;
+using System.Globalization;
+using System.Security.Claims;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -74,6 +77,34 @@ builder.Services.AddAuthentication(options =>
         ValidateLifetime = true,
         ClockSkew = TimeSpan.Zero
     };
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = async context =>
+        {
+            if (!TryGetAuthenticatedUserId(context.Principal, out var userId)
+                || !TryGetTokenVersion(context.Principal, out var tokenVersion))
+            {
+                context.Fail("The token is missing required claims.");
+                return;
+            }
+
+            var dbContext = context.HttpContext.RequestServices.GetRequiredService<OnlineEyewearDbContext>();
+            var user = await dbContext.Users
+                .AsNoTracking()
+                .FirstOrDefaultAsync(currentUser => currentUser.UserId == userId, context.HttpContext.RequestAborted);
+
+            if (user is null || !user.IsActive)
+            {
+                context.Fail("The user is no longer active.");
+                return;
+            }
+
+            if (user.TokenVersion != tokenVersion)
+            {
+                context.Fail("The token has been revoked.");
+            }
+        }
+    };
 });
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
@@ -139,4 +170,24 @@ static string[] GetCorsAllowedOrigins(IConfiguration configuration)
         "http://127.0.0.1:5173",
         "https://127.0.0.1:5173"
     ];
+}
+
+static bool TryGetAuthenticatedUserId(ClaimsPrincipal? principal, out int userId)
+{
+    var userIdClaim = principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    return int.TryParse(userIdClaim, out userId);
+}
+
+static bool TryGetTokenVersion(ClaimsPrincipal? principal, out int tokenVersion)
+{
+    var rawTokenVersion = principal?.FindFirst(TokenClaimNames.TokenVersion)?.Value;
+
+    if (string.IsNullOrWhiteSpace(rawTokenVersion))
+    {
+        tokenVersion = 0;
+        return true;
+    }
+
+    return int.TryParse(rawTokenVersion, NumberStyles.None, CultureInfo.InvariantCulture, out tokenVersion)
+        && tokenVersion >= 0;
 }
