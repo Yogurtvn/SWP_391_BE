@@ -33,11 +33,17 @@ public interface IPaymentService
         int paymentId,
         CancellationToken cancellationToken = default);
 
-    Task<PaymentActionResponse?> InitializeMomoPaymentAsync(
+    Task<PaymentActionResponse?> InitializeVnpayPaymentAsync(
         PaymentEntity payment,
         OrderEntity order,
         string? orderInfo,
         CancellationToken cancellationToken = default);
 
-    Task HandleMomoIpnAsync(MomoIpnRequest request, CancellationToken cancellationToken = default);
+    Task HandleVnpayReturnAsync(
+        IReadOnlyDictionary<string, string> queryParameters,
+        CancellationToken cancellationToken = default);
+
+    Task<VnpayIpnResponse> HandleVnpayIpnAsync(
+        IReadOnlyDictionary<string, string> queryParameters,
+        CancellationToken cancellationToken = default);
 }
