@@ -1,10 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using ServiceLayer.Contracts.Payment;
 using ServiceLayer.DTOs.Payment.Request;
 using ServiceLayer.DTOs.Payment.Response;
 using ServiceLayer.Exceptions;
+using System.Text.Json;
 
 namespace ControllerLayer.Controllers;
 
@@ -126,19 +126,13 @@ public class PaymentsController(IPaymentService paymentService) : ApiControllerB
     }
 
     [AllowAnonymous]
-    [HttpGet("vnpay/return")]
-    public async Task<IActionResult> VnpayReturn(CancellationToken cancellationToken)
+    [HttpPost("payos/webhook")]
+    public async Task<IActionResult> PayOsWebhook(
+        [FromBody] JsonElement payload,
+        CancellationToken cancellationToken)
     {
-        await _paymentService.HandleVnpayReturnAsync(ToQueryDictionary(Request.Query), cancellationToken);
-        return NoContent();
-    }
-
-    [AllowAnonymous]
-    [HttpGet("vnpay/ipn")]
-    public async Task<IActionResult> VnpayIpn(CancellationToken cancellationToken)
-    {
-        var result = await _paymentService.HandleVnpayIpnAsync(ToQueryDictionary(Request.Query), cancellationToken);
-        return Content($"RspCode={result.RspCode}&Message={Uri.EscapeDataString(result.Message)}", "text/plain");
+        var result = await _paymentService.HandlePayOsWebhookAsync(payload.GetRawText(), cancellationToken);
+        return result.Acknowledged ? Ok(result) : BadRequest(result);
     }
 
     private bool CanAccessAllPayments()
@@ -146,15 +140,4 @@ public class PaymentsController(IPaymentService paymentService) : ApiControllerB
         return User.IsInRole("Admin") || User.IsInRole("Staff");
     }
 
-    private static IReadOnlyDictionary<string, string> ToQueryDictionary(IQueryCollection query)
-    {
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in query)
-        {
-            values[item.Key] = item.Value.ToString();
-        }
-
-        return values;
-    }
 }

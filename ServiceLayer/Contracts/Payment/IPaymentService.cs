@@ -33,17 +33,13 @@ public interface IPaymentService
         int paymentId,
         CancellationToken cancellationToken = default);
 
-    Task<PaymentActionResponse?> InitializeVnpayPaymentAsync(
+    Task<PaymentActionResponse?> InitializePayOsPaymentAsync(
         PaymentEntity payment,
         OrderEntity order,
         string? orderInfo,
         CancellationToken cancellationToken = default);
 
-    Task HandleVnpayReturnAsync(
-        IReadOnlyDictionary<string, string> queryParameters,
-        CancellationToken cancellationToken = default);
-
-    Task<VnpayIpnResponse> HandleVnpayIpnAsync(
-        IReadOnlyDictionary<string, string> queryParameters,
+    Task<PayOsWebhookResponse> HandlePayOsWebhookAsync(
+        string rawPayload,
         CancellationToken cancellationToken = default);
 }

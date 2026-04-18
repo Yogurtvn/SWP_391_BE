@@ -9,18 +9,21 @@ using ServiceLayer.DTOs.Payment.Request;
 using ServiceLayer.DTOs.Payment.Response;
 using ServiceLayer.Exceptions;
 using ServiceLayer.Utilities;
+using System.Globalization;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace ServiceLayer.Services.PaymentManagement;
 
 public class PaymentService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IVnpayGatewayClient vnpayGatewayClient) : IPaymentService
+    IPayOsGatewayClient payOsGatewayClient) : IPaymentService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
-    private readonly IVnpayGatewayClient _vnpayGatewayClient = vnpayGatewayClient;
+    private readonly IPayOsGatewayClient _payOsGatewayClient = payOsGatewayClient;
 
     public async Task<CreatePaymentResponse> CreatePaymentAsync(
         int currentUserId,
@@ -103,8 +106,8 @@ public class PaymentService(
             }
         }
 
-        var paymentAction = payment.PaymentMethod == PaymentMethod.VNPay
-            ? await InitializeVnpayPaymentAsync(payment, order, null, cancellationToken)
+        var paymentAction = payment.PaymentMethod == PaymentMethod.PayOS
+            ? await InitializePayOsPaymentAsync(payment, order, null, cancellationToken)
             : null;
 
         return new CreatePaymentResponse
@@ -296,7 +299,7 @@ public class PaymentService(
         };
     }
 
-    public async Task<PaymentActionResponse?> InitializeVnpayPaymentAsync(
+    public async Task<PaymentActionResponse?> InitializePayOsPaymentAsync(
         Payment payment,
         Order order,
         string? orderInfo,
@@ -305,24 +308,26 @@ public class PaymentService(
         ArgumentNullException.ThrowIfNull(payment);
         ArgumentNullException.ThrowIfNull(order);
 
-        if (payment.PaymentMethod != PaymentMethod.VNPay)
+        if (payment.PaymentMethod != PaymentMethod.PayOS)
         {
             return null;
         }
 
-        string payUrl;
+        var orderCode = BuildPayOsOrderCode();
+        PayOsCreatePaymentLinkResult gatewayResult;
 
         try
         {
-            payUrl = _vnpayGatewayClient.CreatePaymentUrl(
-                new VnpayCreateGatewayRequestDto
+            gatewayResult = await _payOsGatewayClient.CreatePaymentLinkAsync(
+                new PayOsCreateGatewayRequestDto
                 {
                     PaymentId = payment.PaymentId,
                     OrderId = order.OrderId,
-                    OrderReference = BuildPaymentReference(payment.PaymentId),
+                    OrderCode = orderCode,
                     Amount = payment.Amount,
-                    OrderInfo = orderInfo
-                });
+                    Description = BuildPaymentReference(payment.PaymentId)
+                },
+                cancellationToken);
         }
         catch (Exception exception)
         {
@@ -330,99 +335,74 @@ public class PaymentService(
                 payment,
                 PaymentStatus.Pending,
                 null,
-                $"VNPay initialization failed: {TruncateNote(exception.Message)}",
+                $"PayOS initialization failed: {TruncateNote(exception.Message)}",
                 cancellationToken);
 
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
         }
 
-        await AddPaymentHistoryAsync(payment, PaymentStatus.Pending, null, "VNPay payment initialized.", cancellationToken);
+        await AddPaymentHistoryAsync(
+            payment,
+            PaymentStatus.Pending,
+            gatewayResult.OrderCode.ToString(CultureInfo.InvariantCulture),
+            "PayOS payment initialized.",
+            cancellationToken);
 
         return new PaymentActionResponse
         {
             PaymentId = payment.PaymentId,
             PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
-            PayUrl = payUrl,
+            PayUrl = gatewayResult.CheckoutUrl,
             Deeplink = null,
-            QrCodeUrl = null
+            QrCodeUrl = gatewayResult.QrCode
         };
     }
 
-    public async Task HandleVnpayReturnAsync(
-        IReadOnlyDictionary<string, string> queryParameters,
+    public async Task<PayOsWebhookResponse> HandlePayOsWebhookAsync(
+        string rawPayload,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(queryParameters);
-
-        var resolution = await ResolveVnpayCallbackAsync(queryParameters, cancellationToken);
-
-        if (resolution.Result != VnpayCallbackResolutionResult.Valid || resolution.Payment is null)
+        if (string.IsNullOrWhiteSpace(rawPayload))
         {
-            return;
+            return CreateWebhookResponse(false, true, "Invalid webhook data");
         }
 
-        await ApplyVnpayCallbackResultAsync(
+        var envelope = ParseWebhookEnvelope(rawPayload);
+        var verification = _payOsGatewayClient.VerifyWebhookPayload(rawPayload);
+
+        if (verification.Status == PayOsWebhookVerificationStatus.InvalidSignature)
+        {
+            return CreateWebhookResponse(false, false, "Invalid webhook signature");
+        }
+
+        if (verification.Status != PayOsWebhookVerificationStatus.Valid || verification.Data is null)
+        {
+            return CreateWebhookResponse(false, true, "Invalid webhook data");
+        }
+
+        var resolution = await ResolvePayOsWebhookAsync(verification.Data, cancellationToken);
+
+        if (resolution.Result == PayOsWebhookResolutionResult.PaymentNotFound || resolution.Payment is null)
+        {
+            return CreateWebhookResponse(false, true, "Payment not found");
+        }
+
+        if (resolution.Result == PayOsWebhookResolutionResult.InvalidAmount)
+        {
+            return CreateWebhookResponse(false, false, "Invalid amount");
+        }
+
+        var successfulWebhook = IsPayOsSuccess(envelope);
+
+        await ApplyPayOsWebhookResultAsync(
             resolution.Payment,
-            queryParameters,
-            "VNPay return",
-            cancellationToken);
-    }
-
-    public async Task<VnpayIpnResponse> HandleVnpayIpnAsync(
-        IReadOnlyDictionary<string, string> queryParameters,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(queryParameters);
-
-        var resolution = await ResolveVnpayCallbackAsync(queryParameters, cancellationToken);
-
-        if (resolution.Result == VnpayCallbackResolutionResult.InvalidSignature)
-        {
-            return new VnpayIpnResponse
-            {
-                RspCode = "97",
-                Message = "Invalid Signature"
-            };
-        }
-
-        if (resolution.Result == VnpayCallbackResolutionResult.PaymentNotFound)
-        {
-            return new VnpayIpnResponse
-            {
-                RspCode = "01",
-                Message = "Payment Not Found"
-            };
-        }
-
-        if (resolution.Result == VnpayCallbackResolutionResult.InvalidAmount)
-        {
-            return new VnpayIpnResponse
-            {
-                RspCode = "04",
-                Message = "Invalid Amount"
-            };
-        }
-
-        if (resolution.Payment is null)
-        {
-            return new VnpayIpnResponse
-            {
-                RspCode = "99",
-                Message = "Unknown Error"
-            };
-        }
-
-        await ApplyVnpayCallbackResultAsync(
-            resolution.Payment,
-            queryParameters,
-            "VNPay IPN",
+            verification.Data,
+            successfulWebhook,
             cancellationToken);
 
-        return new VnpayIpnResponse
-        {
-            RspCode = "00",
-            Message = "Confirm Success"
-        };
+        return successfulWebhook
+            ? CreateWebhookResponse(true, true, "Payment processed successfully")
+            : CreateWebhookResponse(true, true, "Payment failed recorded");
     }
 
     private async Task AddPaymentHistoryAsync(
@@ -435,7 +415,7 @@ public class PaymentService(
         payment.PaymentHistories.Add(new PaymentHistory
         {
             PaymentStatus = paymentStatus,
-            TransactionCode = transactionCode,
+            TransactionCode = TruncateTransactionCode(transactionCode),
             Notes = TruncateNote(notes),
             CreatedAt = DateTime.UtcNow
         });
@@ -443,53 +423,57 @@ public class PaymentService(
         await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task<VnpayCallbackResolution> ResolveVnpayCallbackAsync(
-        IReadOnlyDictionary<string, string> queryParameters,
+    private async Task<PayOsWebhookResolution> ResolvePayOsWebhookAsync(
+        PayOsVerifiedWebhookData webhookData,
         CancellationToken cancellationToken)
     {
-        if (!_vnpayGatewayClient.ValidateSignature(queryParameters)
-            || !_vnpayGatewayClient.IsValidTmnCode(GetQueryValue(queryParameters, "vnp_TmnCode")))
+        if (!TryResolvePaymentId(webhookData, out var paymentId))
         {
-            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.InvalidSignature, null);
-        }
-
-        if (!TryParsePaymentReference(GetQueryValue(queryParameters, "vnp_TxnRef"), out var paymentId))
-        {
-            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.PaymentNotFound, null);
+            return new PayOsWebhookResolution(PayOsWebhookResolutionResult.PaymentNotFound, null);
         }
 
         var payment = await _dbContext.Payments
             .Include(current => current.PaymentHistories)
             .FirstOrDefaultAsync(
-                current => current.PaymentId == paymentId && current.PaymentMethod == PaymentMethod.VNPay,
+                current => current.PaymentId == paymentId && current.PaymentMethod == PaymentMethod.PayOS,
                 cancellationToken);
+
+        if (payment is null && webhookData.OrderCode > 0)
+        {
+            var orderCodeText = webhookData.OrderCode.ToString(CultureInfo.InvariantCulture);
+            payment = await _dbContext.Payments
+                .Include(current => current.PaymentHistories)
+                .FirstOrDefaultAsync(
+                    current => current.PaymentMethod == PaymentMethod.PayOS
+                        && current.PaymentHistories.Any(history => history.TransactionCode == orderCodeText),
+                    cancellationToken);
+        }
 
         if (payment is null)
         {
-            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.PaymentNotFound, null);
+            return new PayOsWebhookResolution(PayOsWebhookResolutionResult.PaymentNotFound, null);
         }
 
-        var callbackAmount = GetQueryValue(queryParameters, "vnp_Amount");
-
-        if (!long.TryParse(callbackAmount, out var gatewayAmount)
-            || gatewayAmount != ToVnpayAmount(payment.Amount))
+        if (webhookData.Amount <= 0 || webhookData.Amount != ToPayOsAmount(payment.Amount))
         {
-            return new VnpayCallbackResolution(VnpayCallbackResolutionResult.InvalidAmount, null);
+            return new PayOsWebhookResolution(PayOsWebhookResolutionResult.InvalidAmount, null);
         }
 
-        return new VnpayCallbackResolution(VnpayCallbackResolutionResult.Valid, payment);
+        return new PayOsWebhookResolution(PayOsWebhookResolutionResult.Valid, payment);
     }
 
-    private async Task ApplyVnpayCallbackResultAsync(
+    private async Task ApplyPayOsWebhookResultAsync(
         Payment payment,
-        IReadOnlyDictionary<string, string> queryParameters,
-        string source,
+        PayOsVerifiedWebhookData webhookData,
+        bool success,
         CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
-        var transactionCode = TruncateTransactionCode(GetQueryValue(queryParameters, "vnp_TransactionNo"));
+        var transactionCode = TruncateTransactionCode(
+            NormalizeText(webhookData.Reference)
+            ?? webhookData.OrderCode.ToString(CultureInfo.InvariantCulture));
 
-        if (IsVnpaySuccess(queryParameters))
+        if (success)
         {
             if (payment.PaymentStatus == PaymentStatus.Completed)
             {
@@ -502,7 +486,7 @@ public class PaymentService(
             {
                 PaymentStatus = PaymentStatus.Completed,
                 TransactionCode = transactionCode,
-                Notes = $"{source} confirmed payment.",
+                Notes = "PayOS webhook confirmed payment.",
                 CreatedAt = now
             });
 
@@ -510,13 +494,10 @@ public class PaymentService(
             return;
         }
 
-        if (payment.PaymentStatus == PaymentStatus.Completed)
+        if (payment.PaymentStatus == PaymentStatus.Completed || payment.PaymentStatus == PaymentStatus.Failed)
         {
             return;
         }
-
-        var responseCode = GetQueryValue(queryParameters, "vnp_ResponseCode") ?? "unknown";
-        var transactionStatus = GetQueryValue(queryParameters, "vnp_TransactionStatus") ?? "unknown";
 
         payment.PaymentStatus = PaymentStatus.Failed;
         payment.PaidAt = null;
@@ -524,27 +505,127 @@ public class PaymentService(
         {
             PaymentStatus = PaymentStatus.Failed,
             TransactionCode = transactionCode,
-            Notes = TruncateNote($"{source} failed: responseCode={responseCode}, transactionStatus={transactionStatus}."),
+            Notes = "PayOS webhook marked payment as failed.",
             CreatedAt = now
         });
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
-    private static string? GetQueryValue(IReadOnlyDictionary<string, string> queryParameters, string key)
+    private static bool TryResolvePaymentId(PayOsVerifiedWebhookData webhookData, out int paymentId)
     {
-        return queryParameters.TryGetValue(key, out var value)
-            ? NormalizeText(value)
-            : null;
+        paymentId = 0;
+
+        if (TryParsePaymentReference(NormalizeText(webhookData.Description), out paymentId))
+        {
+            return true;
+        }
+
+        if (TryParsePaymentReference(NormalizeText(webhookData.Reference), out paymentId))
+        {
+            return true;
+        }
+
+        return false;
     }
 
-    private static bool IsVnpaySuccess(IReadOnlyDictionary<string, string> queryParameters)
+    private static bool IsPayOsSuccess(PayOsWebhookEnvelope envelope)
     {
-        var responseCode = GetQueryValue(queryParameters, "vnp_ResponseCode");
-        var transactionStatus = GetQueryValue(queryParameters, "vnp_TransactionStatus");
+        var topLevelSuccess = string.Equals(envelope.Code, "00", StringComparison.OrdinalIgnoreCase)
+            && (!envelope.Success.HasValue || envelope.Success.Value);
+        var dataLevelSuccess = string.Equals(envelope.DataCode, "00", StringComparison.OrdinalIgnoreCase);
 
-        return string.Equals(responseCode, "00", StringComparison.OrdinalIgnoreCase)
-            && (transactionStatus is null || string.Equals(transactionStatus, "00", StringComparison.OrdinalIgnoreCase));
+        return topLevelSuccess || dataLevelSuccess;
+    }
+
+    private static PayOsWebhookEnvelope ParseWebhookEnvelope(string rawPayload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(rawPayload);
+            var root = document.RootElement;
+            var code = ReadJsonString(root, "code");
+            var success = ReadJsonBoolean(root, "success");
+            var dataCode = default(string);
+
+            if (TryReadJsonObject(root, "data", out var dataElement))
+            {
+                dataCode = ReadJsonString(dataElement, "code");
+            }
+
+            return new PayOsWebhookEnvelope
+            {
+                Code = code,
+                Success = success,
+                DataCode = dataCode
+            };
+        }
+        catch
+        {
+            return new PayOsWebhookEnvelope();
+        }
+    }
+
+    private static string? ReadJsonString(JsonElement element, string propertyName)
+    {
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue))
+        {
+            return null;
+        }
+
+        return propertyValue.ValueKind == JsonValueKind.String
+            ? NormalizeText(propertyValue.GetString())
+            : NormalizeText(propertyValue.ToString());
+    }
+
+    private static bool? ReadJsonBoolean(JsonElement element, string propertyName)
+    {
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue))
+        {
+            return null;
+        }
+
+        return propertyValue.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => bool.TryParse(propertyValue.ToString(), out var parsed) ? parsed : null
+        };
+    }
+
+    private static bool TryReadJsonObject(JsonElement element, string propertyName, out JsonElement objectElement)
+    {
+        objectElement = default;
+
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue)
+            || propertyValue.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        objectElement = propertyValue;
+        return true;
+    }
+
+    private static bool TryReadJsonProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            value = default;
+            return false;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static IOrderedQueryable<Payment> ApplySorting(IQueryable<Payment> query, string? sortBy, bool descending)
@@ -622,12 +703,19 @@ public class PaymentService(
 
     private static bool IsSupportedPaymentMethod(PaymentMethod paymentMethod)
     {
-        return paymentMethod == PaymentMethod.COD || paymentMethod == PaymentMethod.VNPay;
+        return paymentMethod == PaymentMethod.COD || paymentMethod == PaymentMethod.PayOS;
     }
 
-    private static long ToVnpayAmount(decimal amount)
+    private static int ToPayOsAmount(decimal amount)
     {
-        return Convert.ToInt64(Math.Round(amount * 100m, 0, MidpointRounding.AwayFromZero));
+        return Convert.ToInt32(Math.Round(amount, 0, MidpointRounding.AwayFromZero));
+    }
+
+    private static long BuildPayOsOrderCode()
+    {
+        var milliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var entropy = RandomNumberGenerator.GetInt32(100, 999);
+        return (milliseconds * 1000L) + entropy;
     }
 
     private static string TruncateNote(string? value)
@@ -648,20 +736,38 @@ public class PaymentService(
         return normalizedValue.Length <= 100 ? normalizedValue : normalizedValue[..100];
     }
 
+    private static PayOsWebhookResponse CreateWebhookResponse(bool success, bool acknowledged, string message)
+    {
+        return new PayOsWebhookResponse
+        {
+            Success = success,
+            Acknowledged = acknowledged,
+            Message = message
+        };
+    }
+
     private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)
     {
         return new ApiException((int)statusCode, errorCode, message, details);
     }
 
-    private enum VnpayCallbackResolutionResult
+    private enum PayOsWebhookResolutionResult
     {
-        Valid,
-        InvalidSignature,
-        PaymentNotFound,
-        InvalidAmount
+        Valid = 1,
+        PaymentNotFound = 2,
+        InvalidAmount = 3
     }
 
-    private sealed record VnpayCallbackResolution(
-        VnpayCallbackResolutionResult Result,
+    private sealed class PayOsWebhookEnvelope
+    {
+        public string? Code { get; set; }
+
+        public bool? Success { get; set; }
+
+        public string? DataCode { get; set; }
+    }
+
+    private sealed record PayOsWebhookResolution(
+        PayOsWebhookResolutionResult Result,
         Payment? Payment);
 }
