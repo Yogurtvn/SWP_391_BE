@@ -1,0 +1,525 @@
+using Microsoft.EntityFrameworkCore;
+using RepositoryLayer.Common;
+using RepositoryLayer.Data;
+using RepositoryLayer.Entities;
+using RepositoryLayer.Enums;
+using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Payment;
+using ServiceLayer.DTOs.Payment.Request;
+using ServiceLayer.DTOs.Payment.Response;
+using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
+using System.Net;
+
+namespace ServiceLayer.Services.PaymentManagement;
+
+public class PaymentService(
+    IUnitOfWork unitOfWork,
+    OnlineEyewearDbContext dbContext,
+    IMomoGatewayClient momoGatewayClient) : IPaymentService
+{
+    private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly OnlineEyewearDbContext _dbContext = dbContext;
+    private readonly IMomoGatewayClient _momoGatewayClient = momoGatewayClient;
+
+    public async Task<CreatePaymentResponse> CreatePaymentAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        CreatePaymentRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var orderId = request.OrderId.GetValueOrDefault();
+        var requestedAmount = request.Amount;
+
+        if (orderId <= 0 || requestedAmount is null || requestedAmount < 0m || !ApiEnumMapper.TryParsePaymentMethod(request.PaymentMethod, out var paymentMethod))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
+        }
+
+        var order = await _dbContext.Orders
+            .Include(current => current.Payments)
+                .ThenInclude(payment => payment.PaymentHistories)
+            .FirstOrDefaultAsync(
+                current => current.OrderId == orderId && (canAccessAllOrders || current.UserId == currentUserId),
+                cancellationToken);
+
+        if (order is null || requestedAmount.Value != order.TotalAmount)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
+        }
+
+        Payment payment;
+
+        if (order.Payments.Count > 0)
+        {
+            payment = order.Payments
+                .OrderByDescending(current => current.PaymentId)
+                .First();
+
+            if (payment.PaymentStatus == PaymentStatus.Completed
+                || payment.Amount != requestedAmount.Value
+                || payment.PaymentMethod != paymentMethod)
+            {
+                throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
+            }
+        }
+        else
+        {
+            var now = DateTime.UtcNow;
+            payment = new Payment
+            {
+                OrderId = order.OrderId,
+                Amount = requestedAmount.Value,
+                PaymentMethod = paymentMethod,
+                PaymentStatus = PaymentStatus.Pending,
+                PaymentHistories =
+                [
+                    new PaymentHistory
+                    {
+                        PaymentStatus = PaymentStatus.Pending,
+                        Notes = "Payment created.",
+                        CreatedAt = now
+                    }
+                ]
+            };
+
+            try
+            {
+                await _unitOfWork.BeginTransactionAsync(cancellationToken);
+                await _unitOfWork.Repository<Payment>().AddAsync(payment);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                await _unitOfWork.CommitTransactionAsync(cancellationToken);
+            }
+            catch
+            {
+                await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        var paymentAction = await InitializeMomoPaymentAsync(payment, order, null, cancellationToken);
+
+        return new CreatePaymentResponse
+        {
+            PaymentId = payment.PaymentId,
+            OrderId = payment.OrderId,
+            PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(payment.PaymentMethod),
+            PaymentStatus = paymentAction?.PaymentStatus ?? ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
+            PayUrl = paymentAction?.PayUrl,
+            Deeplink = paymentAction?.Deeplink,
+            QrCodeUrl = paymentAction?.QrCodeUrl
+        };
+    }
+
+    public async Task<PagedResult<PaymentListItemResponse>> GetPaymentsAsync(
+        GetPaymentsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var query = _dbContext.Payments
+            .AsNoTracking()
+            .Include(payment => payment.PaymentHistories)
+            .AsSplitQuery()
+            .AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(request.PaymentMethod))
+        {
+            if (!ApiEnumMapper.TryParsePaymentMethod(request.PaymentMethod, out var paymentMethod))
+            {
+                throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid payment query");
+            }
+
+            query = query.Where(payment => payment.PaymentMethod == paymentMethod);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.PaymentStatus))
+        {
+            if (!ApiEnumMapper.TryParsePaymentStatus(request.PaymentStatus, out var paymentStatus))
+            {
+                throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid payment query");
+            }
+
+            query = query.Where(payment => payment.PaymentStatus == paymentStatus);
+        }
+
+        if (request.OrderId.HasValue)
+        {
+            query = query.Where(payment => payment.OrderId == request.OrderId.Value);
+        }
+
+        if (request.FromDate.HasValue)
+        {
+            var fromDate = request.FromDate.Value.Date;
+            query = query.Where(payment =>
+                payment.PaymentHistories.Min(history => (DateTime?)history.CreatedAt) >= fromDate);
+        }
+
+        if (request.ToDate.HasValue)
+        {
+            var toDateExclusive = request.ToDate.Value.Date.AddDays(1);
+            query = query.Where(payment =>
+                payment.PaymentHistories.Min(history => (DateTime?)history.CreatedAt) < toDateExclusive);
+        }
+
+        var page = Math.Max(request.Page, PaginationRequest.DefaultPage);
+        var pageSize = request.PageSize < 1
+            ? PaginationRequest.DefaultPageSize
+            : Math.Min(request.PageSize, PaginationRequest.MaxPageSize);
+        var sortDescending = ParseSortOrder(request.SortOrder);
+
+        query = ApplySorting(query, request.SortBy, sortDescending);
+
+        var totalItems = await query.CountAsync(cancellationToken);
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(payment => new PaymentListItemResponse
+            {
+                PaymentId = payment.PaymentId,
+                OrderId = payment.OrderId,
+                PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(payment.PaymentMethod),
+                PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus)
+            })
+            .ToListAsync(cancellationToken);
+
+        return PagedResult<PaymentListItemResponse>.Create(items, page, pageSize, totalItems);
+    }
+
+    public async Task<PaymentDetailResponse?> GetPaymentByIdAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        int paymentId,
+        CancellationToken cancellationToken = default)
+    {
+        var payment = await _dbContext.Payments
+            .AsNoTracking()
+            .Include(current => current.Order)
+            .FirstOrDefaultAsync(
+                current => current.PaymentId == paymentId && (canAccessAllOrders || current.Order.UserId == currentUserId),
+                cancellationToken);
+
+        return payment is null
+            ? null
+            : new PaymentDetailResponse
+            {
+                PaymentId = payment.PaymentId,
+                OrderId = payment.OrderId,
+                Amount = payment.Amount,
+                PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(payment.PaymentMethod),
+                PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
+                PaidAt = payment.PaidAt
+            };
+    }
+
+    public async Task<PaymentStatusUpdatedResponse> UpdatePaymentStatusAsync(
+        int paymentId,
+        UpdatePaymentStatusRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!ApiEnumMapper.TryParsePaymentStatus(request.PaymentStatus, out var paymentStatus))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_STATUS", "Invalid payment status update");
+        }
+
+        var payment = await _dbContext.Payments
+            .Include(current => current.PaymentHistories)
+            .FirstOrDefaultAsync(current => current.PaymentId == paymentId, cancellationToken);
+
+        if (payment is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "PAYMENT_NOT_FOUND", "Payment not found");
+        }
+
+        if (payment.PaymentStatus == paymentStatus)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_STATUS", "Invalid payment status update");
+        }
+
+        var now = DateTime.UtcNow;
+        payment.PaymentStatus = paymentStatus;
+        payment.PaidAt = paymentStatus == PaymentStatus.Completed ? now : null;
+        payment.PaymentHistories.Add(new PaymentHistory
+        {
+            PaymentStatus = paymentStatus,
+            TransactionCode = NormalizeText(request.TransactionCode),
+            Notes = NormalizeText(request.Notes),
+            CreatedAt = now
+        });
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return new PaymentStatusUpdatedResponse
+        {
+            Message = "Payment status updated",
+            PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(paymentStatus)
+        };
+    }
+
+    public async Task<PaymentHistoriesResponse> GetPaymentHistoriesAsync(
+        int paymentId,
+        CancellationToken cancellationToken = default)
+    {
+        var payment = await _dbContext.Payments
+            .AsNoTracking()
+            .Include(current => current.PaymentHistories)
+            .FirstOrDefaultAsync(current => current.PaymentId == paymentId, cancellationToken);
+
+        if (payment is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "PAYMENT_NOT_FOUND", "Payment not found");
+        }
+
+        return new PaymentHistoriesResponse
+        {
+            Items = payment.PaymentHistories
+                .OrderBy(history => history.CreatedAt)
+                .ThenBy(history => history.PaymentHistoryId)
+                .Select(history => new PaymentHistoryListItemResponse
+                {
+                    PaymentHistoryId = history.PaymentHistoryId,
+                    PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(history.PaymentStatus),
+                    TransactionCode = history.TransactionCode,
+                    CreatedAt = history.CreatedAt
+                })
+                .ToList()
+        };
+    }
+
+    public async Task<PaymentActionResponse?> InitializeMomoPaymentAsync(
+        Payment payment,
+        Order order,
+        string? orderInfo,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(payment);
+        ArgumentNullException.ThrowIfNull(order);
+
+        if (payment.PaymentMethod != PaymentMethod.Momo)
+        {
+            return null;
+        }
+
+        MomoCreateGatewayResultDto gatewayResult;
+
+        try
+        {
+            gatewayResult = await _momoGatewayClient.CreatePaymentAsync(
+                new MomoCreateGatewayRequestDto
+                {
+                    PaymentId = payment.PaymentId,
+                    OrderId = order.OrderId,
+                    OrderReference = BuildPaymentReference(payment.PaymentId),
+                    Amount = payment.Amount,
+                    OrderInfo = orderInfo
+                },
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            await AddPaymentHistoryAsync(
+                payment,
+                PaymentStatus.Pending,
+                null,
+                $"MoMo initialization failed: {TruncateNote(exception.Message)}",
+                cancellationToken);
+
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
+        }
+
+        if (!gatewayResult.IsSuccessStatusCode || gatewayResult.ResultCode != 0)
+        {
+            var errorNote = !gatewayResult.IsSuccessStatusCode
+                ? $"MoMo HTTP error {gatewayResult.HttpStatusCode}."
+                : $"MoMo returned resultCode {gatewayResult.ResultCode}.";
+
+            await AddPaymentHistoryAsync(payment, PaymentStatus.Pending, null, errorNote, cancellationToken);
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
+        }
+
+        await AddPaymentHistoryAsync(payment, PaymentStatus.Pending, null, "MoMo payment initialized.", cancellationToken);
+
+        return new PaymentActionResponse
+        {
+            PaymentId = payment.PaymentId,
+            PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
+            PayUrl = gatewayResult.PayUrl,
+            Deeplink = gatewayResult.Deeplink,
+            QrCodeUrl = gatewayResult.QrCodeUrl
+        };
+    }
+
+    public async Task HandleMomoIpnAsync(MomoIpnRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!_momoGatewayClient.ValidateSignature(request) || !_momoGatewayClient.IsValidPartnerCode(request.PartnerCode))
+        {
+            return;
+        }
+
+        if (!TryParsePaymentReference(request.OrderId, out var paymentId))
+        {
+            return;
+        }
+
+        var payment = await _dbContext.Payments
+            .Include(current => current.PaymentHistories)
+            .FirstOrDefaultAsync(
+                current => current.PaymentId == paymentId && current.PaymentMethod == PaymentMethod.Momo,
+                cancellationToken);
+
+        if (payment is null || RoundAmount(payment.Amount) != request.Amount)
+        {
+            return;
+        }
+
+        if (request.ResultCode == 0)
+        {
+            if (payment.PaymentStatus != PaymentStatus.Completed)
+            {
+                payment.PaymentStatus = PaymentStatus.Completed;
+                payment.PaidAt = DateTime.UtcNow;
+                payment.PaymentHistories.Add(new PaymentHistory
+                {
+                    PaymentStatus = PaymentStatus.Completed,
+                    TransactionCode = request.TransId.ToString(),
+                    Notes = "MoMo IPN confirmed payment.",
+                    CreatedAt = DateTime.UtcNow
+                });
+
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+
+            return;
+        }
+
+        if (payment.PaymentStatus == PaymentStatus.Completed)
+        {
+            return;
+        }
+
+        payment.PaymentStatus = PaymentStatus.Failed;
+        payment.PaidAt = null;
+        payment.PaymentHistories.Add(new PaymentHistory
+        {
+            PaymentStatus = PaymentStatus.Failed,
+            TransactionCode = request.TransId == 0 ? null : request.TransId.ToString(),
+            Notes = TruncateNote($"MoMo IPN failed: {request.Message}"),
+            CreatedAt = DateTime.UtcNow
+        });
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task AddPaymentHistoryAsync(
+        Payment payment,
+        PaymentStatus paymentStatus,
+        string? transactionCode,
+        string notes,
+        CancellationToken cancellationToken)
+    {
+        payment.PaymentHistories.Add(new PaymentHistory
+        {
+            PaymentStatus = paymentStatus,
+            TransactionCode = transactionCode,
+            Notes = TruncateNote(notes),
+            CreatedAt = DateTime.UtcNow
+        });
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private static IOrderedQueryable<Payment> ApplySorting(IQueryable<Payment> query, string? sortBy, bool descending)
+    {
+        var normalizedSortBy = NormalizeSortField(sortBy);
+
+        return normalizedSortBy switch
+        {
+            null or "createdat" => descending
+                ? query.OrderByDescending(payment => payment.PaymentHistories.Min(history => (DateTime?)history.CreatedAt))
+                    .ThenByDescending(payment => payment.PaymentId)
+                : query.OrderBy(payment => payment.PaymentHistories.Min(history => (DateTime?)history.CreatedAt))
+                    .ThenBy(payment => payment.PaymentId),
+            "paymentid" => descending
+                ? query.OrderByDescending(payment => payment.PaymentId)
+                : query.OrderBy(payment => payment.PaymentId),
+            "orderid" => descending
+                ? query.OrderByDescending(payment => payment.OrderId)
+                : query.OrderBy(payment => payment.OrderId),
+            "amount" => descending
+                ? query.OrderByDescending(payment => payment.Amount).ThenByDescending(payment => payment.PaymentId)
+                : query.OrderBy(payment => payment.Amount).ThenBy(payment => payment.PaymentId),
+            "paidat" => descending
+                ? query.OrderByDescending(payment => payment.PaidAt).ThenByDescending(payment => payment.PaymentId)
+                : query.OrderBy(payment => payment.PaidAt).ThenBy(payment => payment.PaymentId),
+            _ => throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid payment query")
+        };
+    }
+
+    private static bool ParseSortOrder(string? sortOrder)
+    {
+        var normalizedSortOrder = NormalizeSortField(sortOrder);
+
+        return normalizedSortOrder switch
+        {
+            null or "desc" => true,
+            "asc" => false,
+            _ => throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid payment query")
+        };
+    }
+
+    private static string? NormalizeText(string? value)
+    {
+        var normalizedValue = value?.Trim();
+        return string.IsNullOrWhiteSpace(normalizedValue) ? null : normalizedValue;
+    }
+
+    private static string? NormalizeSortField(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : value
+                .Trim()
+                .Replace("-", string.Empty, StringComparison.Ordinal)
+                .Replace("_", string.Empty, StringComparison.Ordinal)
+                .ToLowerInvariant();
+    }
+
+    private static string BuildPaymentReference(int paymentId)
+    {
+        return $"PAYMENT_{paymentId}";
+    }
+
+    private static bool TryParsePaymentReference(string? reference, out int paymentId)
+    {
+        paymentId = 0;
+
+        if (string.IsNullOrWhiteSpace(reference) || !reference.StartsWith("PAYMENT_", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return int.TryParse(reference["PAYMENT_".Length..], out paymentId) && paymentId > 0;
+    }
+
+    private static long RoundAmount(decimal amount)
+    {
+        return Convert.ToInt64(Math.Round(amount, 0, MidpointRounding.AwayFromZero));
+    }
+
+    private static string TruncateNote(string? value)
+    {
+        var normalizedValue = NormalizeText(value) ?? string.Empty;
+        return normalizedValue.Length <= 255 ? normalizedValue : normalizedValue[..255];
+    }
+
+    private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)
+    {
+        return new ApiException((int)statusCode, errorCode, message, details);
+    }
+}

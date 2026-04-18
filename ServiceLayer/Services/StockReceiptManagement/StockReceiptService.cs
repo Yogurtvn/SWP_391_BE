@@ -13,7 +13,7 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
 
     public async Task<StockReceiptDtoResponse> CreateStockReceiptAsync(
         CreateStockReceiptRequest request,
-        int? staffId = null,
+        int staffUserId,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -59,7 +59,7 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
                 VariantId = request.VariantId,
                 QuantityReceived = request.QuantityReceived,
                 ReceivedDate = now,
-                StaffId = staffId,
+                StaffId = staffUserId,
                 Note = request.Note?.Trim()
             };
 

@@ -4,30 +4,29 @@ using RepositoryLayer.Common;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.DTOs.StockReceipt.Request;
 using ServiceLayer.DTOs.StockReceipt.Response;
-using System.Security.Claims;
 
 namespace ControllerLayer.Controllers;
 
 [Route("api/stock-receipts")]
 [ApiController]
-public class StockReceiptsController(IStockReceiptService stockReceiptService) : ControllerBase
+[Authorize(Roles = "Admin,Staff")]
+public class StockReceiptsController(IStockReceiptService stockReceiptService) : ApiControllerBase
 {
     private readonly IStockReceiptService _stockReceiptService = stockReceiptService;
 
-    [Authorize(Roles = "Admin,Staff")]
     [HttpPost]
     public async Task<ActionResult<StockReceiptDtoResponse>> CreateStockReceipt(
         [FromBody] CreateStockReceiptRequest request,
         CancellationToken cancellationToken)
     {
-        if (!TryGetCurrentUserId(out var staffId))
+        if (!TryGetCurrentUserId(out var staffUserId))
         {
-            return Unauthorized(new { message = "User id claim is missing or invalid." });
+            return Unauthorized(new { errorCode = "UNAUTHORIZED", message = "Authentication required" });
         }
 
         try
         {
-            var result = await _stockReceiptService.CreateStockReceiptAsync(request, staffId, cancellationToken);
+            var result = await _stockReceiptService.CreateStockReceiptAsync(request, staffUserId, cancellationToken);
             return Ok(result);
         }
         catch (KeyNotFoundException ex)
@@ -36,7 +35,6 @@ public class StockReceiptsController(IStockReceiptService stockReceiptService) :
         }
     }
 
-    [AllowAnonymous]
     [HttpGet]
     public async Task<ActionResult<PagedResult<StockReceiptListDtoResponse>>> GetStockReceipts(
         [FromQuery] int page = 1,
@@ -68,7 +66,6 @@ public class StockReceiptsController(IStockReceiptService stockReceiptService) :
         return Ok(result);
     }
 
-    [AllowAnonymous]
     [HttpGet("{receiptId:int}")]
     public async Task<ActionResult<StockReceiptDtoResponse>> GetStockReceipt(int receiptId, CancellationToken cancellationToken)
     {
@@ -80,11 +77,5 @@ public class StockReceiptsController(IStockReceiptService stockReceiptService) :
         }
 
         return Ok(result);
-    }
-
-    private bool TryGetCurrentUserId(out int userId)
-    {
-        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        return int.TryParse(userIdClaim, out userId);
     }
 }

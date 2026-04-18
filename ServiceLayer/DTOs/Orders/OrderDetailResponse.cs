@@ -32,9 +32,9 @@ public class OrderDetailResponse
 
     public List<OrderItemResponse> Items { get; set; } = [];
 
-    public List<OrderPaymentResponse> Payments { get; set; } = [];
+    public OrderPaymentResponse? Payment { get; set; }
 
-    public List<OrderStatusHistoryResponse> StatusHistories { get; set; } = [];
+    public List<OrderStatusHistoryResponse> StatusHistory { get; set; } = [];
 }
 
 public class OrderItemResponse

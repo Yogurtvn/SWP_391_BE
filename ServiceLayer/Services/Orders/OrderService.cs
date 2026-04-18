@@ -1,14 +1,24 @@
 using Microsoft.EntityFrameworkCore;
+using RepositoryLayer.Common;
 using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Orders;
+using ServiceLayer.Contracts.Payment;
+using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.Orders;
+using ServiceLayer.DTOs.Payment.Response;
+using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
+using System.Net;
 
 namespace ServiceLayer.Services.Orders;
 
-public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbContext) : IOrderService
+public class OrderService(
+    IUnitOfWork unitOfWork,
+    OnlineEyewearDbContext dbContext,
+    IPaymentService paymentService) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses =
     [
@@ -17,6 +27,7 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
         OrderStatus.AwaitingStock
     ];
 
+    // TODO: align the transition matrix once API_SPEC.md defines the exact orderStatus rules.
     private static readonly Dictionary<OrderStatus, HashSet<OrderStatus>> AllowedStatusTransitions = new()
     {
         [OrderStatus.Pending] =
@@ -51,133 +62,280 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
+    private readonly IPaymentService _paymentService = paymentService;
 
-    public async Task<OrderDetailResponse> CheckoutReadyOrderAsync(
+    public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
-        ReadyOrderCheckoutRequest request,
+        CheckoutOrderRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var receiverName = NormalizeRequiredText(request.ReceiverName, "Receiver name");
-        var receiverPhone = NormalizeRequiredText(request.ReceiverPhone, "Receiver phone");
-        var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "Shipping address");
-
-        if (!TryParsePaymentMethod(request.PaymentMethod, out var paymentMethod))
-        {
-            throw new InvalidOperationException("Payment method is invalid. Use COD, VNPay, Momo, or their numeric values.");
-        }
-
-        var requestedItems = PrepareCheckoutItems(request.Items);
-        var userRepository = _unitOfWork.Repository<User>();
-        var variantRepository = _unitOfWork.Repository<ProductVariant>();
-        var orderRepository = _unitOfWork.Repository<Order>();
-
-        var userExists = await userRepository.ExistsAsync(user => user.UserId == userId && user.IsActive);
-
-        if (!userExists)
-        {
-            throw new KeyNotFoundException("Authenticated user was not found or is inactive.");
-        }
-
-        var checkoutItems = requestedItems
-            .OrderBy(item => item.VariantId)
-            .ToList();
-        var variantIds = checkoutItems.Select(item => item.VariantId).ToHashSet();
+        var receiverName = NormalizeRequiredText(request.ReceiverName, "receiverName");
+        var receiverPhone = NormalizeRequiredText(request.ReceiverPhone, "receiverPhone");
+        var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "shippingAddress");
+        var paymentMethod = ParsePaymentMethod(request.PaymentMethod);
+        var cartItemIds = PrepareCartItemIds(request.CartItemIds);
         var now = DateTime.UtcNow;
-        var totalAmount = 0m;
-        var order = new Order
+
+        var cartItems = await _dbContext.CartItems
+            .Include(item => item.Cart)
+            .Include(item => item.Variant)
+                .ThenInclude(variant => variant.Product)
+            .Include(item => item.Variant)
+                .ThenInclude(variant => variant.Inventory)
+            .Include(item => item.CartPrescriptionDetail)
+                .ThenInclude(detail => detail!.LensType)
+            .Where(item => cartItemIds.Contains(item.CartItemId) && item.Cart.UserId == userId)
+            .OrderBy(item => item.CartItemId)
+            .ToListAsync(cancellationToken);
+
+        if (cartItems.Count != cartItemIds.Count)
         {
-            UserId = userId,
-            OrderType = OrderType.Ready,
-            OrderStatus = OrderStatus.Pending,
-            TotalAmount = 0m,
-            ReceiverName = receiverName,
-            ReceiverPhone = receiverPhone,
-            ShippingAddress = shippingAddress,
-            ShippingStatus = ShippingStatus.Pending,
-            CreatedAt = now,
-            UpdatedAt = now
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        var orderType = ResolveCheckoutOrderType(cartItems);
+        var orderItems = BuildCheckoutOrderItems(userId, cartItems, orderType, now);
+        var result = await CreateOrderAsync(
+            userId,
+            orderType,
+            receiverName,
+            receiverPhone,
+            shippingAddress,
+            paymentMethod,
+            orderItems,
+            createdByUserId: userId,
+            requestMomoInitialization: paymentMethod == PaymentMethod.Momo,
+            cartItemsToRemove: cartItems,
+            cancellationToken: cancellationToken);
+
+        return new CheckoutOrderResponse
+        {
+            OrderId = result.Order.OrderId,
+            TotalAmount = result.Order.TotalAmount,
+            OrderStatus = ApiEnumMapper.ToApiOrderStatus(result.Order.OrderStatus),
+            Payment = MapCheckoutPayment(result.Payment, result.PaymentAction)
         };
+    }
+
+    public async Task<BuyNowOrderResponse> BuyNowAsync(
+        int userId,
+        BuyNowOrderRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.VariantId <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", "variantId must be greater than 0");
+        }
+
+        if (request.Quantity <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", "quantity must be greater than 0");
+        }
+
+        var receiverName = NormalizeRequiredText(request.ReceiverName, "receiverName");
+        var receiverPhone = NormalizeRequiredText(request.ReceiverPhone, "receiverPhone");
+        var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "shippingAddress");
+        var paymentMethod = ParsePaymentMethod(request.PaymentMethod);
+        var now = DateTime.UtcNow;
+
+        var variant = await _dbContext.ProductVariants
+            .Include(item => item.Product)
+            .Include(item => item.Inventory)
+            .FirstOrDefaultAsync(
+                item => item.VariantId == request.VariantId,
+                cancellationToken);
+
+        if (variant is null || !variant.IsActive || !variant.Product.IsActive)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", "Selected variant is not available");
+        }
+
+        if (variant.Inventory is null || variant.Inventory.Quantity < request.Quantity)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Selected variant is out of stock");
+        }
+
+        var result = await CreateOrderAsync(
+            userId,
+            OrderType.Ready,
+            receiverName,
+            receiverPhone,
+            shippingAddress,
+            paymentMethod,
+            [
+                new OrderCreationItem
+                {
+                    Variant = variant,
+                    Quantity = request.Quantity,
+                    SelectedColor = NormalizeText(variant.Color),
+                    UnitPrice = variant.Price,
+                    LineTotal = variant.Price * request.Quantity,
+                    ReserveInventory = true
+                }
+            ],
+            createdByUserId: userId,
+            requestMomoInitialization: paymentMethod == PaymentMethod.Momo,
+            cancellationToken: cancellationToken);
+
+        return new BuyNowOrderResponse
+        {
+            OrderId = result.Order.OrderId,
+            OrderType = ApiEnumMapper.ToApiOrderType(result.Order.OrderType),
+            OrderStatus = ApiEnumMapper.ToApiOrderStatus(result.Order.OrderStatus),
+            Payment = MapCheckoutPayment(result.Payment, result.PaymentAction)
+        };
+    }
+
+    public async Task<PagedResult<OrderSummaryResponse>> GetOrdersAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        GetOrdersRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var query = _dbContext.Orders
+            .AsNoTracking()
+            .Include(order => order.OrderItems)
+            .Include(order => order.Payments)
+            .AsSplitQuery()
+            .AsQueryable();
+
+        if (!canAccessAllOrders)
+        {
+            query = query.Where(order => order.UserId == currentUserId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.OrderType))
+        {
+            var orderType = ParseOrderType(request.OrderType);
+            query = query.Where(order => order.OrderType == orderType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.OrderStatus))
+        {
+            var orderStatus = ParseOrderStatus(request.OrderStatus);
+            query = query.Where(order => order.OrderStatus == orderStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ShippingStatus))
+        {
+            var shippingStatus = ParseShippingStatus(request.ShippingStatus);
+            query = query.Where(order => order.ShippingStatus == shippingStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.PaymentStatus))
+        {
+            var paymentStatus = ParsePaymentStatus(request.PaymentStatus);
+            query = query.Where(order => order.Payments.Any(payment => payment.PaymentStatus == paymentStatus));
+        }
+
+        if (request.FromDate.HasValue)
+        {
+            var fromDate = request.FromDate.Value.Date;
+            query = query.Where(order => order.CreatedAt >= fromDate);
+        }
+
+        if (request.ToDate.HasValue)
+        {
+            var toDateExclusive = request.ToDate.Value.Date.AddDays(1);
+            query = query.Where(order => order.CreatedAt < toDateExclusive);
+        }
+
+        var page = Math.Max(request.Page, PaginationRequest.DefaultPage);
+        var pageSize = request.PageSize < 1
+            ? PaginationRequest.DefaultPageSize
+            : Math.Min(request.PageSize, PaginationRequest.MaxPageSize);
+        var sortDescending = ParseSortOrder(request.SortOrder);
+
+        query = ApplyOrderSorting(query, request.SortBy, sortDescending);
+
+        var totalItems = await query.CountAsync(cancellationToken);
+        var orders = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        return PagedResult<OrderSummaryResponse>.Create(
+            orders.Select(MapOrderSummary).ToList(),
+            page,
+            pageSize,
+            totalItems);
+    }
+
+    public async Task<OrderDetailResponse?> GetOrderByIdAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        int orderId,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Product)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.LensType)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
+            .Include(current => current.Payments)
+                .ThenInclude(payment => payment.PaymentHistories)
+            .Include(current => current.OrderStatusHistories)
+                .ThenInclude(history => history.UpdatedByUser)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
+
+        return order is null ? null : MapOrderDetail(order);
+    }
+
+    public async Task<OrderCancelResponse> CancelOrderAsync(
+        int userId,
+        int orderId,
+        CancelOrderRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var order = await _dbContext.Orders
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.Payments)
+                .ThenInclude(payment => payment.PaymentHistories)
+            .Include(current => current.OrderStatusHistories)
+            .FirstOrDefaultAsync(
+                current => current.OrderId == orderId && current.UserId == userId,
+                cancellationToken);
+
+        if (order is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "ORDER_NOT_FOUND", "Order not found");
+        }
+
+        if (order.OrderStatus == OrderStatus.Cancelled)
+        {
+            throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
+        }
+
+        if (!CancellableStatuses.Contains(order.OrderStatus))
+        {
+            throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
+        }
+
+        if (order.Payments.Any(payment => payment.PaymentStatus == PaymentStatus.Completed))
+        {
+            throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
+        }
+
+        var note = NormalizeText(request.Reason);
 
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
-
-            var variants = (await variantRepository.FindAsync(
-                variant => variantIds.Contains(variant.VariantId),
-                includeProperties: "Product,Inventory",
-                tracked: true))
-                .ToList();
-
-            if (variants.Count != variantIds.Count)
-            {
-                var foundVariantIds = variants.Select(variant => variant.VariantId).ToHashSet();
-                var missingVariantIds = variantIds.Where(variantId => !foundVariantIds.Contains(variantId));
-                throw new KeyNotFoundException($"Variant not found: {string.Join(", ", missingVariantIds)}.");
-            }
-
-            var variantsById = variants.ToDictionary(variant => variant.VariantId);
-
-            foreach (var requestedItem in checkoutItems)
-            {
-                var variant = variantsById[requestedItem.VariantId];
-
-                ValidateVariantForReadyOrder(variant);
-
-                var inventoryDeducted = await TryDeductInventoryAsync(
-                    variant.VariantId,
-                    requestedItem.Quantity,
-                    cancellationToken);
-
-                if (!inventoryDeducted)
-                {
-                    var availableQuantity = await GetAvailableInventoryQuantityAsync(variant.VariantId, cancellationToken);
-                    throw new InvalidOperationException(
-                        $"Variant {variant.VariantId} only has {availableQuantity} item(s) in stock.");
-                }
-
-                var lineTotal = variant.Price * requestedItem.Quantity;
-                totalAmount += lineTotal;
-
-                order.OrderItems.Add(new OrderItem
-                {
-                    VariantId = variant.VariantId,
-                    Variant = variant,
-                    Quantity = requestedItem.Quantity,
-                    SelectedColor = requestedItem.SelectedColor ?? variant.Color,
-                    UnitPrice = variant.Price
-                });
-            }
-
-            var payment = new Payment
-            {
-                Amount = totalAmount,
-                PaymentMethod = paymentMethod,
-                PaymentStatus = PaymentStatus.Pending,
-                PaymentHistories =
-                [
-                    new PaymentHistory
-                    {
-                        PaymentStatus = PaymentStatus.Pending,
-                        Notes = "Order checkout created.",
-                        CreatedAt = now
-                    }
-                ]
-            };
-
-            order.TotalAmount = totalAmount;
-            order.Payments.Add(payment);
-            order.OrderStatusHistories.Add(new OrderStatusHistory
-            {
-                OrderStatus = OrderStatus.Pending,
-                UpdatedByUserId = userId,
-                Note = "Order created by customer.",
-                UpdatedAt = now
-            });
-
-            await orderRepository.AddAsync(order);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            await CancelOrderInternalAsync(order, userId, note ?? "Order cancelled by customer.", cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
         catch
@@ -186,35 +344,126 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
             throw;
         }
 
-        return MapOrderDetail(order);
+        return new OrderCancelResponse
+        {
+            Message = "Order cancelled",
+            OrderStatus = ApiEnumMapper.ToApiOrderStatus(order.OrderStatus)
+        };
     }
 
-    public async Task<IReadOnlyList<OrderSummaryResponse>> GetMyOrdersAsync(
-        int userId,
+    public async Task<MessageResponse> AssignStaffAsync(
+        int currentUserId,
+        int orderId,
+        AssignOrderStaffRequest request,
         CancellationToken cancellationToken = default)
     {
-        var orderRepository = _unitOfWork.Repository<Order>();
-        var orders = await orderRepository.FindAsync(
-            filter: order => order.UserId == userId,
-            orderBy: query => query.OrderByDescending(order => order.CreatedAt),
-            includeProperties: "OrderItems,Payments",
-            tracked: false);
+        ArgumentNullException.ThrowIfNull(request);
 
-        return orders
-            .Select(MapOrderSummary)
-            .ToList();
+        var staffId = request.StaffId.GetValueOrDefault();
+
+        if (staffId <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "STAFF_NOT_FOUND", "Staff not found");
+        }
+
+        var staff = await _dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                user => user.UserId == staffId && user.Role == UserRole.Staff && user.IsActive,
+                cancellationToken);
+
+        if (staff is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "STAFF_NOT_FOUND", "Staff not found");
+        }
+
+        var order = await _dbContext.Orders
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "ORDER_NOT_FOUND", "Order not found");
+        }
+
+        order.StaffId = staffId;
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return new MessageResponse
+        {
+            Message = "Staff assigned"
+        };
     }
 
-    public async Task<OrderDetailResponse?> GetMyOrderByIdAsync(
-        int userId,
+    public async Task<OrderItemsResponse?> GetOrderItemsAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
         int orderId,
         CancellationToken cancellationToken = default)
     {
-        var order = await GetOrderForUserAsync(userId, orderId, tracked: false);
-        return order is null ? null : MapOrderDetail(order);
+        var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
+            .Include(current => current.OrderItems)
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        return new OrderItemsResponse
+        {
+            Items = order.OrderItems
+                .OrderBy(item => item.OrderItemId)
+                .Select(item => new OrderItemListItemResponse
+                {
+                    OrderItemId = item.OrderItemId,
+                    VariantId = item.VariantId,
+                    Quantity = item.Quantity,
+                    UnitPrice = item.UnitPrice,
+                    LensTypeId = item.LensTypeId,
+                    LensPrice = item.LensPrice
+                })
+                .ToList()
+        };
     }
 
-    public async Task<OrderDetailResponse?> UpdateOrderStatusAsync(
+    public async Task<OrderItemDetailResponse?> GetOrderItemByIdAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        int orderId,
+        int orderItemId,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
+            .Include(current => current.OrderItems)
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        var orderItem = order.OrderItems.FirstOrDefault(item => item.OrderItemId == orderItemId);
+
+        if (orderItem is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "ORDER_ITEM_NOT_FOUND", "Order item not found");
+        }
+
+        return new OrderItemDetailResponse
+        {
+            OrderItemId = orderItem.OrderItemId,
+            VariantId = orderItem.VariantId,
+            Quantity = orderItem.Quantity,
+            SelectedColor = orderItem.SelectedColor,
+            TotalPrice = (orderItem.UnitPrice + (orderItem.LensPrice ?? 0m)) * orderItem.Quantity,
+            LensTypeId = orderItem.LensTypeId,
+            LensPrice = orderItem.LensPrice
+        };
+    }
+
+    public async Task<OrderStatusUpdatedResponse> UpdateOrderStatusAsync(
         int staffUserId,
         int orderId,
         UpdateOrderStatusRequest request,
@@ -222,34 +471,19 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!TryParseOrderStatus(request.OrderStatus, out var nextOrderStatus))
-        {
-            throw new InvalidOperationException("Order status is invalid.");
-        }
-
-        var providedShippingStatus = NormalizeOptionalText(request.ShippingStatus);
-        ShippingStatus? nextShippingStatus = null;
-
-        if (providedShippingStatus is not null)
-        {
-            if (!TryParseShippingStatus(providedShippingStatus, out var parsedShippingStatus))
-            {
-                throw new InvalidOperationException("Shipping status is invalid.");
-            }
-
-            nextShippingStatus = parsedShippingStatus;
-        }
-
-        var note = NormalizeOptionalText(request.Note);
-        var orderRepository = _unitOfWork.Repository<Order>();
-        var order = await orderRepository.GetFirstOrDefaultAsync(
-            currentOrder => currentOrder.OrderId == orderId && currentOrder.OrderType == OrderType.Ready,
-            includeProperties: "OrderItems.Variant.Product,OrderItems.Variant.Inventory,OrderStatusHistories.UpdatedByUser,Payments.PaymentHistories",
-            tracked: true);
+        var nextOrderStatus = ParseOrderStatus(request.OrderStatus);
+        var order = await _dbContext.Orders
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.Payments)
+                .ThenInclude(payment => payment.PaymentHistories)
+            .Include(current => current.OrderStatusHistories)
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
         {
-            return null;
+            throw CreateApiException(HttpStatusCode.NotFound, "ORDER_NOT_FOUND", "Order not found");
         }
 
         ValidateStatusTransition(order.OrderStatus, nextOrderStatus);
@@ -261,31 +495,29 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
             if (nextOrderStatus == OrderStatus.Cancelled)
             {
                 order.StaffId = staffUserId;
-                await CancelOrderAsync(
+                await CancelOrderInternalAsync(
                     order,
                     staffUserId,
-                    note ?? "Order cancelled by staff.",
+                    NormalizeText(request.Note) ?? "Order cancelled by staff.",
                     cancellationToken);
             }
             else
             {
                 var now = DateTime.UtcNow;
-
                 order.OrderStatus = nextOrderStatus;
-                order.ShippingStatus = ResolveShippingStatus(nextOrderStatus, nextShippingStatus);
                 order.StaffId = staffUserId;
                 order.UpdatedAt = now;
 
                 if (nextOrderStatus == OrderStatus.Completed)
                 {
-                    CompletePaymentsForDeliveredOrder(order, now);
+                    CompletePaymentsForCompletedOrder(order, now);
                 }
 
                 order.OrderStatusHistories.Add(new OrderStatusHistory
                 {
                     OrderStatus = nextOrderStatus,
                     UpdatedByUserId = staffUserId,
-                    Note = note ?? BuildDefaultStatusNote(nextOrderStatus),
+                    Note = NormalizeText(request.Note) ?? BuildDefaultStatusNote(nextOrderStatus),
                     UpdatedAt = now
                 });
 
@@ -300,60 +532,195 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
             throw;
         }
 
-        return MapOrderDetail(order);
+        return new OrderStatusUpdatedResponse
+        {
+            Message = "Order status updated",
+            OrderStatus = ApiEnumMapper.ToApiOrderStatus(order.OrderStatus)
+        };
     }
 
-    public async Task<CancelOrderResult> CancelMyOrderAsync(
-        int userId,
+    public async Task<ShippingStatusUpdatedResponse> UpdateShippingStatusAsync(
+        int staffUserId,
         int orderId,
+        UpdateShippingStatusRequest request,
         CancellationToken cancellationToken = default)
     {
-        var order = await GetOrderForUserAsync(
-            userId,
-            orderId,
-            tracked: true,
-            includeProperties: "OrderItems.Variant.Product,OrderItems.Variant.Inventory,OrderStatusHistories.UpdatedByUser,Payments.PaymentHistories");
+        ArgumentNullException.ThrowIfNull(request);
+
+        var shippingStatus = ParseShippingStatus(request.ShippingStatus);
+        var order = await _dbContext.Orders
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
         {
-            return new CancelOrderResult
-            {
-                ErrorCode = "ORDER_NOT_FOUND",
-                Message = "Order not found."
-            };
+            throw CreateApiException(HttpStatusCode.NotFound, "ORDER_NOT_FOUND", "Order not found");
         }
 
-        if (order.OrderStatus == OrderStatus.Cancelled)
+        order.ShippingStatus = shippingStatus;
+        order.ShippingCode = NormalizeText(request.ShippingCode);
+        order.ExpectedDeliveryDate = request.ExpectedDeliveryDate;
+        order.StaffId = staffUserId;
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return new ShippingStatusUpdatedResponse
         {
-            return new CancelOrderResult
-            {
-                ErrorCode = "ORDER_ALREADY_CANCELLED",
-                Message = "Order has already been cancelled."
-            };
+            Message = "Shipping status updated",
+            ShippingStatus = ApiEnumMapper.ToApiShippingStatus(shippingStatus)
+        };
+    }
+
+    public async Task<OrderStatusHistoriesResponse?> GetOrderStatusHistoriesAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        int orderId,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
+            .Include(current => current.OrderStatusHistories)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            return null;
         }
 
-        if (!CancellableStatuses.Contains(order.OrderStatus))
+        return new OrderStatusHistoriesResponse
         {
-            return new CancelOrderResult
-            {
-                ErrorCode = "ORDER_CANNOT_BE_CANCELLED",
-                Message = "Only pending or confirmed orders can be cancelled."
-            };
+            Items = order.OrderStatusHistories
+                .OrderBy(history => history.UpdatedAt)
+                .ThenBy(history => history.HistoryId)
+                .Select(history => new OrderStatusHistoryListItemResponse
+                {
+                    HistoryId = history.HistoryId,
+                    OrderStatus = ApiEnumMapper.ToApiOrderStatus(history.OrderStatus),
+                    Note = history.Note,
+                    UpdatedAt = history.UpdatedAt
+                })
+                .ToList()
+        };
+    }
+
+    private async Task<CreateOrderResult> CreateOrderAsync(
+        int userId,
+        OrderType orderType,
+        string receiverName,
+        string receiverPhone,
+        string shippingAddress,
+        PaymentMethod paymentMethod,
+        IReadOnlyList<OrderCreationItem> items,
+        int createdByUserId,
+        bool requestMomoInitialization,
+        IReadOnlyCollection<CartItem>? cartItemsToRemove = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (items.Count == 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
         }
 
-        if (order.Payments.Any(payment => payment.PaymentStatus == PaymentStatus.Completed))
+        var now = DateTime.UtcNow;
+        var order = new Order
         {
-            return new CancelOrderResult
-            {
-                ErrorCode = "PAYMENT_ALREADY_COMPLETED",
-                Message = "Order cannot be cancelled because payment has already been completed."
-            };
-        }
+            UserId = userId,
+            OrderType = orderType,
+            OrderStatus = OrderStatus.Pending,
+            ReceiverName = receiverName,
+            ReceiverPhone = receiverPhone,
+            ShippingAddress = shippingAddress,
+            ShippingStatus = ShippingStatus.Pending,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        var payment = new Payment
+        {
+            Amount = 0m,
+            PaymentMethod = paymentMethod,
+            PaymentStatus = PaymentStatus.Pending,
+            PaymentHistories =
+            [
+                new PaymentHistory
+                {
+                    PaymentStatus = PaymentStatus.Pending,
+                    Notes = "Payment created.",
+                    CreatedAt = now
+                }
+            ]
+        };
+
+        order.OrderStatusHistories.Add(new OrderStatusHistory
+        {
+            OrderStatus = OrderStatus.Pending,
+            UpdatedByUserId = createdByUserId,
+            Note = "Order created.",
+            UpdatedAt = now
+        });
 
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
-            await CancelOrderAsync(order, userId, "Order cancelled by customer.", cancellationToken);
+
+            foreach (var item in items)
+            {
+                ValidateOrderVariant(item);
+
+                if (item.RequirePreOrderEnabled && item.Variant.Inventory?.IsPreOrderAllowed != true)
+                {
+                    throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                }
+
+                if (item.ReserveInventory)
+                {
+                    var reserved = await TryDeductInventoryAsync(item.Variant.VariantId, item.Quantity, cancellationToken);
+
+                    if (!reserved)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+                }
+
+                order.TotalAmount += item.LineTotal;
+                order.OrderItems.Add(new OrderItem
+                {
+                    VariantId = item.Variant.VariantId,
+                    Quantity = item.Quantity,
+                    SelectedColor = item.SelectedColor,
+                    UnitPrice = item.UnitPrice,
+                    LensTypeId = item.LensTypeId,
+                    LensPrice = item.LensPrice,
+                    Prescription = item.Prescription
+                });
+            }
+
+            payment.Amount = order.TotalAmount;
+            order.Payments.Add(payment);
+
+            await _unitOfWork.Repository<Order>().AddAsync(order);
+
+            if (cartItemsToRemove is { Count: > 0 })
+            {
+                var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
+                var cartItemRepository = _unitOfWork.Repository<CartItem>();
+                var prescriptionDetails = cartItemsToRemove
+                    .Where(item => item.CartPrescriptionDetail is not null)
+                    .Select(item => item.CartPrescriptionDetail!)
+                    .ToList();
+
+                if (prescriptionDetails.Count > 0)
+                {
+                    detailRepository.RemoveRange(prescriptionDetails);
+                }
+
+                cartItemRepository.RemoveRange(cartItemsToRemove);
+
+                var cart = cartItemsToRemove.First().Cart;
+                cart.UpdatedAt = now;
+            }
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
         catch
@@ -362,54 +729,166 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
             throw;
         }
 
-        return new CancelOrderResult
+        PaymentActionResponse? paymentAction = null;
+
+        if (requestMomoInitialization)
         {
-            Succeeded = true,
-            Message = "Order cancelled successfully.",
-            Order = MapOrderDetail(order)
-        };
+            try
+            {
+                paymentAction = await _paymentService.InitializeMomoPaymentAsync(payment, order, null, cancellationToken);
+            }
+            catch (ApiException)
+            {
+                // Checkout/buy-now has already succeeded at this point.
+                // The existing payment record remains reusable via /api/payments if FE needs to retry initialization.
+            }
+        }
+
+        return new CreateOrderResult(order, payment, paymentAction);
     }
 
-    private async Task<Order?> GetOrderForUserAsync(
+    private static IReadOnlyList<OrderCreationItem> BuildCheckoutOrderItems(
         int userId,
-        int orderId,
-        bool tracked,
-        string includeProperties = "OrderItems.Variant.Product,OrderStatusHistories.UpdatedByUser,Payments.PaymentHistories")
+        IReadOnlyCollection<CartItem> cartItems,
+        OrderType orderType,
+        DateTime now)
     {
-        var orderRepository = _unitOfWork.Repository<Order>();
-        return await orderRepository.GetFirstOrDefaultAsync(
-            order => order.OrderId == orderId && order.UserId == userId,
-            includeProperties: includeProperties,
-            tracked: tracked);
+        return cartItems
+            .OrderBy(item => item.CartItemId)
+            .Select(item =>
+            {
+                if (item.Variant is null || item.Variant.Product is null)
+                {
+                    throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                }
+
+                if (orderType == OrderType.Prescription)
+                {
+                    var detail = item.CartPrescriptionDetail;
+
+                    if (detail is null || detail.LensType is null || !detail.LensType.IsActive)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+
+                    if (item.Variant.Product.ProductType != ProductType.Frame || !item.Variant.Product.PrescriptionCompatible)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+
+                    return new OrderCreationItem
+                    {
+                        Variant = item.Variant,
+                        Quantity = item.Quantity,
+                        SelectedColor = item.SelectedColor,
+                        UnitPrice = item.UnitPrice,
+                        LineTotal = item.TotalPrice,
+                        ReserveInventory = true,
+                        LensTypeId = detail.LensTypeId,
+                        LensPrice = detail.TotalLensPrice,
+                        Prescription = new PrescriptionSpec
+                        {
+                            UserId = userId,
+                            LensTypeId = detail.LensTypeId,
+                            LensTypeCode = detail.LensTypeCode,
+                            LensMaterial = detail.LensMaterial,
+                            Coatings = detail.Coatings,
+                            LensBasePrice = detail.LensBasePrice,
+                            CoatingPrice = detail.CoatingPrice,
+                            TotalLensPrice = detail.TotalLensPrice,
+                            SphLeft = detail.SphLeft,
+                            SphRight = detail.SphRight,
+                            CylLeft = detail.CylLeft,
+                            CylRight = detail.CylRight,
+                            AxisLeft = detail.AxisLeft,
+                            AxisRight = detail.AxisRight,
+                            Pd = detail.Pd,
+                            PrescriptionImage = detail.PrescriptionImage,
+                            PrescriptionStatus = PrescriptionStatus.Submitted,
+                            Notes = detail.Notes,
+                            CreatedAt = now
+                        }
+                    };
+                }
+
+                return new OrderCreationItem
+                {
+                    Variant = item.Variant,
+                    Quantity = item.Quantity,
+                    SelectedColor = item.SelectedColor,
+                    UnitPrice = item.UnitPrice,
+                    LineTotal = item.TotalPrice,
+                    ReserveInventory = orderType == OrderType.Ready,
+                    RequirePreOrderEnabled = orderType == OrderType.PreOrder
+                };
+            })
+            .ToList();
     }
 
-    private async Task CancelOrderAsync(
+    private static IReadOnlyList<int> PrepareCartItemIds(IReadOnlyCollection<int>? cartItemIds)
+    {
+        if (cartItemIds is null || cartItemIds.Count == 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        var preparedIds = cartItemIds
+            .Where(item => item > 0)
+            .Distinct()
+            .ToList();
+
+        if (preparedIds.Count != cartItemIds.Count || preparedIds.Count == 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return preparedIds;
+    }
+
+    private static OrderType ResolveCheckoutOrderType(IEnumerable<CartItem> cartItems)
+    {
+        var distinctOrderTypes = cartItems
+            .Select(item => item.OrderType)
+            .Distinct()
+            .ToList();
+
+        if (distinctOrderTypes.Count != 1)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return distinctOrderTypes[0];
+    }
+
+    private async Task CancelOrderInternalAsync(
         Order order,
         int updatedByUserId,
         string note,
         CancellationToken cancellationToken)
     {
-        var inventoryRepository = _unitOfWork.Repository<Inventory>();
         var now = DateTime.UtcNow;
 
         foreach (var orderItem in order.OrderItems)
         {
-            var inventory = orderItem.Variant.Inventory;
-
-            if (inventory is null)
+            if (order.OrderType != OrderType.PreOrder)
             {
-                inventory = new Inventory
+                var inventory = orderItem.Variant.Inventory;
+
+                if (inventory is null)
                 {
-                    VariantId = orderItem.VariantId,
-                    Quantity = 0,
-                    IsPreOrderAllowed = false
-                };
+                    inventory = new Inventory
+                    {
+                        VariantId = orderItem.VariantId,
+                        Quantity = 0,
+                        IsPreOrderAllowed = false
+                    };
 
-                await inventoryRepository.AddAsync(inventory);
-                orderItem.Variant.Inventory = inventory;
+                    await _unitOfWork.Repository<Inventory>().AddAsync(inventory);
+                    orderItem.Variant.Inventory = inventory;
+                }
+
+                inventory.Quantity += orderItem.Quantity;
             }
-
-            inventory.Quantity += orderItem.Quantity;
         }
 
         order.OrderStatus = OrderStatus.Cancelled;
@@ -437,40 +916,6 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
         await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
-    private static List<PreparedCheckoutItem> PrepareCheckoutItems(IEnumerable<ReadyOrderCheckoutItemRequest> items)
-    {
-        var preparedItems = items
-            .Select(item => new PreparedCheckoutItem(
-                item.VariantId,
-                item.Quantity,
-                NormalizeOptionalText(item.SelectedColor)))
-            .ToList();
-
-        if (preparedItems.Count == 0)
-        {
-            throw new InvalidOperationException("At least one order item is required.");
-        }
-
-        var invalidItem = preparedItems.FirstOrDefault(item => item.Quantity <= 0 || item.VariantId <= 0);
-
-        if (invalidItem is not null)
-        {
-            throw new InvalidOperationException("Each order item must have a valid variant id and quantity greater than zero.");
-        }
-
-        var duplicateVariantId = preparedItems
-            .GroupBy(item => item.VariantId)
-            .FirstOrDefault(group => group.Count() > 1)?
-            .Key;
-
-        if (duplicateVariantId is not null)
-        {
-            throw new InvalidOperationException($"Variant {duplicateVariantId.Value} appears more than once in the checkout request.");
-        }
-
-        return preparedItems;
-    }
-
     private async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken)
     {
         var affectedRows = await _dbContext.Inventory
@@ -484,24 +929,28 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
         return affectedRows == 1;
     }
 
-    private async Task<int> GetAvailableInventoryQuantityAsync(int variantId, CancellationToken cancellationToken)
+    private IQueryable<Order> GetAccessibleOrderQuery(int currentUserId, bool canAccessAllOrders, bool tracked)
     {
-        return await _dbContext.Inventory
-            .Where(inventory => inventory.VariantId == variantId)
-            .Select(inventory => (int?)inventory.Quantity)
-            .SingleOrDefaultAsync(cancellationToken) ?? 0;
-    }
+        var query = tracked ? _dbContext.Orders : _dbContext.Orders.AsNoTracking();
 
-    private static void ValidateVariantForReadyOrder(ProductVariant variant)
-    {
-        if (!variant.IsActive || !variant.Product.IsActive)
+        if (!canAccessAllOrders)
         {
-            throw new InvalidOperationException($"Variant {variant.VariantId} is not available for ordering.");
+            query = query.Where(order => order.UserId == currentUserId);
         }
 
-        if (variant.Inventory is null)
+        return query;
+    }
+
+    private static void ValidateOrderVariant(OrderCreationItem item)
+    {
+        if (!item.Variant.IsActive || !item.Variant.Product.IsActive)
         {
-            throw new InvalidOperationException($"Variant {variant.VariantId} does not have inventory configured.");
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        if ((item.ReserveInventory || item.RequirePreOrderEnabled) && item.Variant.Inventory is null)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
         }
     }
 
@@ -509,63 +958,17 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
     {
         if (currentStatus == nextStatus)
         {
-            throw new InvalidOperationException("The order is already in the requested status.");
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
         if (!AllowedStatusTransitions.TryGetValue(currentStatus, out var allowedStatuses)
             || !allowedStatuses.Contains(nextStatus))
         {
-            throw new InvalidOperationException(
-                $"Invalid status transition from {currentStatus} to {nextStatus}.");
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
     }
 
-    private static ShippingStatus? ResolveShippingStatus(
-        OrderStatus orderStatus,
-        ShippingStatus? requestedShippingStatus)
-    {
-        ShippingStatus? defaultShippingStatus = orderStatus switch
-        {
-            OrderStatus.Pending => ShippingStatus.Pending,
-            OrderStatus.Confirmed => ShippingStatus.Pending,
-            OrderStatus.AwaitingStock => ShippingStatus.Pending,
-            OrderStatus.Processing => ShippingStatus.Picking,
-            OrderStatus.Shipped => ShippingStatus.Delivering,
-            OrderStatus.Completed => ShippingStatus.Delivered,
-            OrderStatus.Cancelled => (ShippingStatus?)null,
-            _ => (ShippingStatus?)null
-        };
-
-        if (requestedShippingStatus is null)
-        {
-            return defaultShippingStatus;
-        }
-
-        var isValidCombination = orderStatus switch
-        {
-            OrderStatus.Pending or OrderStatus.Confirmed or OrderStatus.AwaitingStock
-                => requestedShippingStatus == ShippingStatus.Pending,
-            OrderStatus.Processing
-                => requestedShippingStatus == ShippingStatus.Picking,
-            OrderStatus.Shipped
-                => requestedShippingStatus == ShippingStatus.Delivering,
-            OrderStatus.Completed
-                => requestedShippingStatus == ShippingStatus.Delivered,
-            OrderStatus.Cancelled
-                => false,
-            _ => false
-        };
-
-        if (!isValidCombination)
-        {
-            throw new InvalidOperationException(
-                $"Shipping status {requestedShippingStatus} is not valid for order status {orderStatus}.");
-        }
-
-        return requestedShippingStatus;
-    }
-
-    private static void CompletePaymentsForDeliveredOrder(Order order, DateTime completedAt)
+    private static void CompletePaymentsForCompletedOrder(Order order, DateTime completedAt)
     {
         var activePayments = order.Payments
             .Where(payment => payment.PaymentStatus != PaymentStatus.Failed)
@@ -573,17 +976,12 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
 
         if (activePayments.Count == 0)
         {
-            throw new InvalidOperationException("The order does not have an active payment to complete.");
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
-        var hasUnpaidOnlinePayment = activePayments.Any(payment =>
-            payment.PaymentMethod != PaymentMethod.COD &&
-            payment.PaymentStatus != PaymentStatus.Completed);
-
-        if (hasUnpaidOnlinePayment)
+        if (activePayments.Any(payment => payment.PaymentMethod != PaymentMethod.COD && payment.PaymentStatus != PaymentStatus.Completed))
         {
-            throw new InvalidOperationException(
-                "Online payment must be completed before the order can be marked as completed.");
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
         foreach (var payment in activePayments.Where(payment =>
@@ -601,114 +999,143 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
         }
     }
 
+    private static IOrderedQueryable<Order> ApplyOrderSorting(IQueryable<Order> query, string? sortBy, bool descending)
+    {
+        var normalizedSortBy = NormalizeSortField(sortBy);
+
+        return normalizedSortBy switch
+        {
+            null or "createdat" => descending
+                ? query.OrderByDescending(order => order.CreatedAt).ThenByDescending(order => order.OrderId)
+                : query.OrderBy(order => order.CreatedAt).ThenBy(order => order.OrderId),
+            "updatedat" => descending
+                ? query.OrderByDescending(order => order.UpdatedAt).ThenByDescending(order => order.OrderId)
+                : query.OrderBy(order => order.UpdatedAt).ThenBy(order => order.OrderId),
+            "totalamount" => descending
+                ? query.OrderByDescending(order => order.TotalAmount).ThenByDescending(order => order.OrderId)
+                : query.OrderBy(order => order.TotalAmount).ThenBy(order => order.OrderId),
+            "orderid" => descending
+                ? query.OrderByDescending(order => order.OrderId)
+                : query.OrderBy(order => order.OrderId),
+            _ => throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid order query")
+        };
+    }
+
     private static string BuildDefaultStatusNote(OrderStatus orderStatus)
     {
         return orderStatus switch
         {
-            OrderStatus.Confirmed => "Order confirmed by staff.",
+            OrderStatus.Confirmed => "Order confirmed.",
             OrderStatus.AwaitingStock => "Order moved to awaiting stock.",
-            OrderStatus.Processing => "Order is being packed.",
-            OrderStatus.Shipped => "Order handed over for delivery.",
-            OrderStatus.Completed => "Order completed successfully.",
+            OrderStatus.Processing => "Order is being processed.",
+            OrderStatus.Shipped => "Order shipped.",
+            OrderStatus.Completed => "Order completed.",
             OrderStatus.Cancelled => "Order cancelled.",
-            _ => $"Order status updated to {orderStatus}."
+            _ => $"Order status updated to {ApiEnumMapper.ToApiOrderStatus(orderStatus)}."
         };
     }
 
-    private static bool TryParsePaymentMethod(string? input, out PaymentMethod paymentMethod)
+    private static PaymentMethod ParsePaymentMethod(string? value)
     {
-        paymentMethod = default;
-        var normalizedInput = NormalizeOptionalText(input);
-
-        if (string.IsNullOrWhiteSpace(normalizedInput))
+        if (!ApiEnumMapper.TryParsePaymentMethod(value, out var paymentMethod))
         {
-            return false;
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
         }
 
-        if (Enum.TryParse<PaymentMethod>(normalizedInput, ignoreCase: true, out paymentMethod)
-            && Enum.IsDefined(paymentMethod))
-        {
-            return true;
-        }
-
-        if (byte.TryParse(normalizedInput, out var numericValue)
-            && Enum.IsDefined(typeof(PaymentMethod), numericValue))
-        {
-            paymentMethod = (PaymentMethod)numericValue;
-            return true;
-        }
-
-        return false;
+        return paymentMethod;
     }
 
-    private static bool TryParseOrderStatus(string? input, out OrderStatus orderStatus)
+    private static OrderType ParseOrderType(string? value)
     {
-        orderStatus = default;
-        var normalizedInput = NormalizeOptionalText(input);
-
-        if (string.IsNullOrWhiteSpace(normalizedInput))
+        if (!ApiEnumMapper.TryParseOrderType(value, out var orderType))
         {
-            return false;
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid order query");
         }
 
-        if (Enum.TryParse<OrderStatus>(normalizedInput, ignoreCase: true, out orderStatus)
-            && Enum.IsDefined(orderStatus))
-        {
-            return true;
-        }
-
-        if (byte.TryParse(normalizedInput, out var numericValue)
-            && Enum.IsDefined(typeof(OrderStatus), numericValue))
-        {
-            orderStatus = (OrderStatus)numericValue;
-            return true;
-        }
-
-        return false;
+        return orderType;
     }
 
-    private static bool TryParseShippingStatus(string? input, out ShippingStatus shippingStatus)
+    private static OrderStatus ParseOrderStatus(string? value)
     {
-        shippingStatus = default;
-        var normalizedInput = NormalizeOptionalText(input);
-
-        if (string.IsNullOrWhiteSpace(normalizedInput))
+        if (!ApiEnumMapper.TryParseOrderStatus(value, out var orderStatus))
         {
-            return false;
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
-        if (Enum.TryParse<ShippingStatus>(normalizedInput, ignoreCase: true, out shippingStatus)
-            && Enum.IsDefined(shippingStatus))
-        {
-            return true;
-        }
-
-        if (byte.TryParse(normalizedInput, out var numericValue)
-            && Enum.IsDefined(typeof(ShippingStatus), numericValue))
-        {
-            shippingStatus = (ShippingStatus)numericValue;
-            return true;
-        }
-
-        return false;
+        return orderStatus;
     }
 
-    private static string NormalizeRequiredText(string? value, string fieldName)
+    private static ShippingStatus ParseShippingStatus(string? value)
     {
-        var normalizedValue = NormalizeOptionalText(value);
-
-        if (string.IsNullOrWhiteSpace(normalizedValue))
+        if (!ApiEnumMapper.TryParseShippingStatus(value, out var shippingStatus))
         {
-            throw new InvalidOperationException($"{fieldName} is required.");
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_SHIPPING_STATUS", "Invalid shipping status update");
         }
 
-        return normalizedValue;
+        return shippingStatus;
     }
 
-    private static string? NormalizeOptionalText(string? value)
+    private static PaymentStatus ParsePaymentStatus(string? value)
+    {
+        if (!ApiEnumMapper.TryParsePaymentStatus(value, out var paymentStatus))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid order query");
+        }
+
+        return paymentStatus;
+    }
+
+    private static bool ParseSortOrder(string? sortOrder)
+    {
+        var normalizedSortOrder = NormalizeSortField(sortOrder);
+
+        return normalizedSortOrder switch
+        {
+            null or "desc" => true,
+            "asc" => false,
+            _ => throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid order query")
+        };
+    }
+
+    private static string NormalizeRequiredText(string? value, string field)
+    {
+        var normalized = NormalizeText(value);
+
+        if (normalized is null)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", $"{field} is required");
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeText(string? value)
     {
         var normalizedValue = value?.Trim();
         return string.IsNullOrWhiteSpace(normalizedValue) ? null : normalizedValue;
+    }
+
+    private static string? NormalizeSortField(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : value
+                .Trim()
+                .Replace("-", string.Empty, StringComparison.Ordinal)
+                .Replace("_", string.Empty, StringComparison.Ordinal)
+                .ToLowerInvariant();
+    }
+
+    private static CheckoutPaymentResponse MapCheckoutPayment(Payment payment, PaymentActionResponse? paymentAction)
+    {
+        return new CheckoutPaymentResponse
+        {
+            PaymentId = payment.PaymentId,
+            PaymentStatus = paymentAction?.PaymentStatus ?? ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
+            PayUrl = paymentAction?.PayUrl,
+            Deeplink = paymentAction?.Deeplink,
+            QrCodeUrl = paymentAction?.QrCodeUrl
+        };
     }
 
     private static OrderSummaryResponse MapOrderSummary(Order order)
@@ -720,14 +1147,14 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
         return new OrderSummaryResponse
         {
             OrderId = order.OrderId,
-            OrderType = order.OrderType.ToString(),
-            OrderStatus = order.OrderStatus.ToString(),
-            ShippingStatus = order.ShippingStatus?.ToString(),
+            OrderType = ApiEnumMapper.ToApiOrderType(order.OrderType),
+            OrderStatus = ApiEnumMapper.ToApiOrderStatus(order.OrderStatus),
+            ShippingStatus = order.ShippingStatus is null ? null : ApiEnumMapper.ToApiShippingStatus(order.ShippingStatus.Value),
             TotalAmount = order.TotalAmount,
             ItemCount = order.OrderItems.Sum(item => item.Quantity),
             ReceiverName = order.ReceiverName,
-            PaymentMethod = latestPayment?.PaymentMethod.ToString(),
-            PaymentStatus = latestPayment?.PaymentStatus.ToString(),
+            PaymentMethod = latestPayment is null ? null : ApiEnumMapper.ToApiPaymentMethod(latestPayment.PaymentMethod),
+            PaymentStatus = latestPayment is null ? null : ApiEnumMapper.ToApiPaymentStatus(latestPayment.PaymentStatus),
             CreatedAt = order.CreatedAt,
             UpdatedAt = order.UpdatedAt
         };
@@ -735,18 +1162,22 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
 
     private static OrderDetailResponse MapOrderDetail(Order order)
     {
+        var latestPayment = order.Payments
+            .OrderByDescending(payment => payment.PaymentId)
+            .FirstOrDefault();
+
         return new OrderDetailResponse
         {
             OrderId = order.OrderId,
             UserId = order.UserId,
-            OrderType = order.OrderType.ToString(),
-            OrderStatus = order.OrderStatus.ToString(),
+            OrderType = ApiEnumMapper.ToApiOrderType(order.OrderType),
+            OrderStatus = ApiEnumMapper.ToApiOrderStatus(order.OrderStatus),
             TotalAmount = order.TotalAmount,
             ReceiverName = order.ReceiverName,
             ReceiverPhone = order.ReceiverPhone,
             ShippingAddress = order.ShippingAddress,
             ShippingCode = order.ShippingCode,
-            ShippingStatus = order.ShippingStatus?.ToString(),
+            ShippingStatus = order.ShippingStatus is null ? null : ApiEnumMapper.ToApiShippingStatus(order.ShippingStatus.Value),
             ExpectedDeliveryDate = order.ExpectedDeliveryDate,
             StaffId = order.StaffId,
             CreatedAt = order.CreatedAt,
@@ -764,39 +1195,38 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
                     SelectedColor = item.SelectedColor,
                     Quantity = item.Quantity,
                     UnitPrice = item.UnitPrice,
-                    LineTotal = item.UnitPrice * item.Quantity
+                    LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity
                 })
                 .ToList(),
-            Payments = order.Payments
-                .OrderBy(payment => payment.PaymentId)
-                .Select(payment => new OrderPaymentResponse
+            Payment = latestPayment is null
+                ? null
+                : new OrderPaymentResponse
                 {
-                    PaymentId = payment.PaymentId,
-                    Amount = payment.Amount,
-                    PaymentMethod = payment.PaymentMethod.ToString(),
-                    PaymentStatus = payment.PaymentStatus.ToString(),
-                    PaidAt = payment.PaidAt,
-                    Histories = payment.PaymentHistories
+                    PaymentId = latestPayment.PaymentId,
+                    Amount = latestPayment.Amount,
+                    PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(latestPayment.PaymentMethod),
+                    PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(latestPayment.PaymentStatus),
+                    PaidAt = latestPayment.PaidAt,
+                    Histories = latestPayment.PaymentHistories
                         .OrderBy(history => history.CreatedAt)
                         .ThenBy(history => history.PaymentHistoryId)
                         .Select(history => new OrderPaymentHistoryResponse
                         {
                             PaymentHistoryId = history.PaymentHistoryId,
-                            PaymentStatus = history.PaymentStatus.ToString(),
+                            PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(history.PaymentStatus),
                             TransactionCode = history.TransactionCode,
                             Notes = history.Notes,
                             CreatedAt = history.CreatedAt
                         })
                         .ToList()
-                })
-                .ToList(),
-            StatusHistories = order.OrderStatusHistories
+                },
+            StatusHistory = order.OrderStatusHistories
                 .OrderBy(history => history.UpdatedAt)
                 .ThenBy(history => history.HistoryId)
                 .Select(history => new OrderStatusHistoryResponse
                 {
                     HistoryId = history.HistoryId,
-                    OrderStatus = history.OrderStatus.ToString(),
+                    OrderStatus = ApiEnumMapper.ToApiOrderStatus(history.OrderStatus),
                     UpdatedByUserId = history.UpdatedByUserId,
                     UpdatedByName = history.UpdatedByUser?.FullName,
                     Note = history.Note,
@@ -806,5 +1236,36 @@ public class OrderService(IUnitOfWork unitOfWork, OnlineEyewearDbContext dbConte
         };
     }
 
-    private sealed record PreparedCheckoutItem(int VariantId, int Quantity, string? SelectedColor);
+    private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)
+    {
+        return new ApiException((int)statusCode, errorCode, message, details);
+    }
+
+    private sealed class OrderCreationItem
+    {
+        public required ProductVariant Variant { get; init; }
+
+        public int Quantity { get; init; }
+
+        public string? SelectedColor { get; init; }
+
+        public decimal UnitPrice { get; init; }
+
+        public decimal LineTotal { get; init; }
+
+        public bool ReserveInventory { get; init; }
+
+        public bool RequirePreOrderEnabled { get; init; }
+
+        public int? LensTypeId { get; init; }
+
+        public decimal? LensPrice { get; init; }
+
+        public PrescriptionSpec? Prescription { get; init; }
+    }
+
+    private sealed record CreateOrderResult(
+        Order Order,
+        Payment Payment,
+        PaymentActionResponse? PaymentAction);
 }
