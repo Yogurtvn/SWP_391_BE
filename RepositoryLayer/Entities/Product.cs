@@ -17,6 +17,8 @@ public class Product
     public string? Description { get; set; }
 
     public decimal BasePrice { get; set; }
+    
+    public int Weight { get; set; }
 
     public bool IsActive { get; set; }
 

@@ -227,6 +227,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.ProductType).HasColumnType("tinyint");
             entity.Property(x => x.PrescriptionCompatible).HasDefaultValue(false);
             entity.Property(x => x.BasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.Weight).HasDefaultValue(200);
             entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
 
@@ -357,6 +358,8 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.ReceiverPhone).HasMaxLength(20).IsRequired();
             entity.Property(x => x.ShippingAddress).HasMaxLength(500).IsRequired();
             entity.Property(x => x.ShippingCode).HasMaxLength(100);
+            entity.Property(x => x.ShippingFee).HasPrecision(10, 2).HasDefaultValue(0m);     // Phí ship mặc định = 0
+            entity.Property(x => x.ShippingWardCode).HasMaxLength(20);                        // Mã phường GHN (string)
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
             entity.Property(x => x.UpdatedAt).HasDefaultValueSql("GETDATE()");
 

@@ -22,6 +22,12 @@ public class Order
 
     public string? ShippingCode { get; set; }
 
+    public decimal ShippingFee { get; set; }                // Phí vận chuyển đã tính (VNĐ), được lưu khi khách đặt hàng
+
+    public int? ShippingDistrictId { get; set; }            // Mã quận/huyện GHN nơi nhận hàng (dùng để tra cứu lại nếu cần)
+
+    public string? ShippingWardCode { get; set; }           // Mã phường/xã GHN nơi nhận hàng
+
     public ShippingStatus? ShippingStatus { get; set; }
 
     public DateTime? ExpectedDeliveryDate { get; set; }

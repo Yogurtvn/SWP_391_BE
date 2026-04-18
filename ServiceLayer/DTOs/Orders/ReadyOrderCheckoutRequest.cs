@@ -17,6 +17,12 @@ public class ReadyOrderCheckoutRequest
     public string ShippingAddress { get; set; } = string.Empty;
 
     [Required]
+    public int ToDistrictId { get; set; }
+
+    [Required]
+    public string ToWardCode { get; set; } = string.Empty;
+
+    [Required]
     [MaxLength(20)]
     public string PaymentMethod { get; set; } = string.Empty;
 

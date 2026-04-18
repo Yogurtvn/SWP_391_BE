@@ -2,11 +2,15 @@ using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Orders;
+using ServiceLayer.Contracts.Shipping;
 using ServiceLayer.DTOs.Orders;
+using ServiceLayer.DTOs.Shipping.Request;
 
 namespace ServiceLayer.Services.Orders;
 
-public class OrderService(IUnitOfWork unitOfWork) : IOrderService
+public class OrderService(
+    IUnitOfWork unitOfWork, 
+    IShippingService shippingService) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses =
     [
@@ -48,6 +52,7 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
     };
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IShippingService _shippingService = shippingService;
 
     public async Task<OrderDetailResponse> CheckoutReadyOrderAsync(
         int userId,
@@ -93,6 +98,8 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
         var variantsById = variants.ToDictionary(variant => variant.VariantId);
         var now = DateTime.UtcNow;
         var totalAmount = 0m;
+        var totalWeight = 0; // Tính tổng khối lượng hàng hóa
+
         var order = new Order
         {
             UserId = userId,
@@ -102,6 +109,8 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
             ReceiverName = receiverName,
             ReceiverPhone = receiverPhone,
             ShippingAddress = shippingAddress,
+            ShippingWardCode = request.ToWardCode,
+            ShippingDistrictId = request.ToDistrictId,
             ShippingStatus = ShippingStatus.Pending,
             CreatedAt = now,
             UpdatedAt = now
@@ -115,6 +124,7 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
 
             var lineTotal = variant.Price * requestedItem.Quantity;
             totalAmount += lineTotal;
+            totalWeight += variant.Product.Weight * requestedItem.Quantity; // Cộng dồn khối lượng
 
             order.OrderItems.Add(new OrderItem
             {
@@ -127,6 +137,17 @@ public class OrderService(IUnitOfWork unitOfWork) : IOrderService
 
             variant.Inventory!.Quantity -= requestedItem.Quantity;
         }
+
+        // 4. Tính toán phí ship thực tế từ GHN
+        var shippingFeeResult = await _shippingService.CalculateShippingFeeAsync(new CalculateShippingFeeRequest
+        {
+            ToDistrictId = request.ToDistrictId,
+            ToWardCode = request.ToWardCode,
+            Weight = totalWeight
+        }, cancellationToken);
+
+        order.ShippingFee = shippingFeeResult.TotalFee;
+        totalAmount += shippingFeeResult.TotalFee; // Cộng phí ship vào tổng thanh toán
 
         var payment = new Payment
         {
