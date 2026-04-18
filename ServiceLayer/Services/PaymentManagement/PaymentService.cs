@@ -210,17 +210,152 @@ public class PaymentService(
                 current => current.PaymentId == paymentId && (canAccessAllOrders || current.Order.UserId == currentUserId),
                 cancellationToken);
 
-        return payment is null
-            ? null
-            : new PaymentDetailResponse
+        return payment is null ? null : MapPaymentDetail(payment);
+    }
+
+    public async Task<PaymentDetailResponse?> GetPaymentByPayOsOrderCodeAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        long orderCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (orderCode <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid payment query");
+        }
+
+        var payment = await FindPayOsPaymentByOrderCodeAsync(
+            currentUserId,
+            canAccessAllOrders,
+            orderCode,
+            asNoTracking: true,
+            cancellationToken);
+
+        return payment is null ? null : MapPaymentDetail(payment);
+    }
+
+    public async Task<PayOsPaymentReconciliationResponse> ReconcilePayOsPaymentAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        long orderCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (orderCode <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_QUERY", "Invalid payment query");
+        }
+
+        var payment = await FindPayOsPaymentByOrderCodeAsync(
+            currentUserId,
+            canAccessAllOrders,
+            orderCode,
+            asNoTracking: false,
+            cancellationToken);
+
+        if (payment is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "PAYMENT_NOT_FOUND", "Payment not found");
+        }
+
+        PayOsPaymentLinkInformationResult gatewayResult;
+
+        try
+        {
+            gatewayResult = await _payOsGatewayClient.GetPaymentLinkInformationAsync(orderCode, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadGateway,
+                "PAYOS_RECONCILE_FAILED",
+                "Cannot verify payment with PayOS",
+                new
+                {
+                    message = TruncateNote(exception.Message)
+                });
+        }
+
+        if (gatewayResult.OrderCode <= 0 || gatewayResult.OrderCode != orderCode)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadGateway,
+                "PAYOS_RECONCILE_FAILED",
+                "Cannot verify payment with PayOS");
+        }
+
+        if (gatewayResult.Amount <= 0 || gatewayResult.Amount != ToPayOsAmount(payment.Amount))
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PAYMENT_REQUEST",
+                "PayOS payment amount mismatch");
+        }
+
+        var payOsStatus = NormalizePayOsStatus(gatewayResult.Status);
+        var targetStatus = MapPayOsStatus(payOsStatus);
+        var reconciled = false;
+        string message;
+
+        if (targetStatus is null)
+        {
+            message = string.Equals(payOsStatus, "PENDING", StringComparison.Ordinal)
+                ? "PayOS still reports this payment as pending."
+                : "PayOS returned a non-final payment status.";
+        }
+        else if (targetStatus == PaymentStatus.Completed)
+        {
+            if (payment.PaymentStatus == PaymentStatus.Completed)
             {
-                PaymentId = payment.PaymentId,
-                OrderId = payment.OrderId,
-                Amount = payment.Amount,
-                PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(payment.PaymentMethod),
-                PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
-                PaidAt = payment.PaidAt
-            };
+                message = "Payment was already synchronized as completed.";
+            }
+            else
+            {
+                var now = DateTime.UtcNow;
+                payment.PaymentStatus = PaymentStatus.Completed;
+                payment.PaidAt = now;
+                payment.PaymentHistories.Add(new PaymentHistory
+                {
+                    PaymentStatus = PaymentStatus.Completed,
+                    TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
+                    Notes = "PayOS reconcile confirmed payment after return.",
+                    CreatedAt = now
+                });
+
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                reconciled = true;
+                message = "Payment status updated from PayOS after return.";
+            }
+        }
+        else
+        {
+            if (payment.PaymentStatus == PaymentStatus.Completed)
+            {
+                message = "Payment was already completed locally, so no failing status was applied.";
+            }
+            else if (payment.PaymentStatus == PaymentStatus.Failed)
+            {
+                message = "Payment was already synchronized as failed.";
+            }
+            else
+            {
+                var now = DateTime.UtcNow;
+                payment.PaymentStatus = PaymentStatus.Failed;
+                payment.PaidAt = null;
+                payment.PaymentHistories.Add(new PaymentHistory
+                {
+                    PaymentStatus = PaymentStatus.Failed,
+                    TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
+                    Notes = "PayOS reconcile marked payment as failed after return.",
+                    CreatedAt = now
+                });
+
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                reconciled = true;
+                message = "Payment status marked as failed from PayOS after return.";
+            }
+        }
+
+        return MapPayOsPaymentReconciliation(payment, orderCode, payOsStatus, reconciled, message);
     }
 
     public async Task<PaymentStatusUpdatedResponse> UpdatePaymentStatusAsync(
@@ -421,6 +556,30 @@ public class PaymentService(
         });
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<Payment?> FindPayOsPaymentByOrderCodeAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        long orderCode,
+        bool asNoTracking,
+        CancellationToken cancellationToken)
+    {
+        var orderCodeText = orderCode.ToString(CultureInfo.InvariantCulture);
+        var query = _dbContext.Payments
+            .Include(current => current.Order)
+            .Include(current => current.PaymentHistories)
+            .Where(current =>
+                current.PaymentMethod == PaymentMethod.PayOS
+                && current.PaymentHistories.Any(history => history.TransactionCode == orderCodeText)
+                && (canAccessAllOrders || current.Order.UserId == currentUserId));
+
+        if (asNoTracking)
+        {
+            query = query.AsNoTracking();
+        }
+
+        return await query.FirstOrDefaultAsync(cancellationToken);
     }
 
     private async Task<PayOsWebhookResolution> ResolvePayOsWebhookAsync(
@@ -709,6 +868,56 @@ public class PaymentService(
     private static int ToPayOsAmount(decimal amount)
     {
         return Convert.ToInt32(Math.Round(amount, 0, MidpointRounding.AwayFromZero));
+    }
+
+    private static string NormalizePayOsStatus(string? value)
+    {
+        return NormalizeText(value)?.ToUpperInvariant() ?? string.Empty;
+    }
+
+    private static PaymentStatus? MapPayOsStatus(string payOsStatus)
+    {
+        return payOsStatus switch
+        {
+            "PAID" => PaymentStatus.Completed,
+            "CANCELLED" or "EXPIRED" or "FAILED" => PaymentStatus.Failed,
+            _ => null
+        };
+    }
+
+    private static PaymentDetailResponse MapPaymentDetail(Payment payment)
+    {
+        return new PaymentDetailResponse
+        {
+            PaymentId = payment.PaymentId,
+            OrderId = payment.OrderId,
+            Amount = payment.Amount,
+            PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(payment.PaymentMethod),
+            PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
+            PaidAt = payment.PaidAt
+        };
+    }
+
+    private static PayOsPaymentReconciliationResponse MapPayOsPaymentReconciliation(
+        Payment payment,
+        long orderCode,
+        string payOsStatus,
+        bool reconciled,
+        string message)
+    {
+        return new PayOsPaymentReconciliationResponse
+        {
+            PaymentId = payment.PaymentId,
+            OrderId = payment.OrderId,
+            Amount = payment.Amount,
+            PaymentMethod = ApiEnumMapper.ToApiPaymentMethod(payment.PaymentMethod),
+            PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(payment.PaymentStatus),
+            PaidAt = payment.PaidAt,
+            OrderCode = orderCode,
+            PayOsStatus = payOsStatus,
+            Reconciled = reconciled,
+            Message = message
+        };
     }
 
     private static long BuildPayOsOrderCode()

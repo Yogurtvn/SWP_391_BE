@@ -43,6 +43,17 @@ public class PaymentDetailResponse
     public DateTime? PaidAt { get; set; }
 }
 
+public class PayOsPaymentReconciliationResponse : PaymentDetailResponse
+{
+    public long OrderCode { get; set; }
+
+    public string PayOsStatus { get; set; } = string.Empty;
+
+    public bool Reconciled { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+}
+
 public class PaymentStatusUpdatedResponse
 {
     public string Message { get; set; } = string.Empty;

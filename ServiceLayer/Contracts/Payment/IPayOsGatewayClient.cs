@@ -9,5 +9,9 @@ public interface IPayOsGatewayClient
         PayOsCreateGatewayRequestDto request,
         CancellationToken cancellationToken = default);
 
+    Task<PayOsPaymentLinkInformationResult> GetPaymentLinkInformationAsync(
+        long orderCode,
+        CancellationToken cancellationToken = default);
+
     PayOsWebhookVerificationResult VerifyWebhookPayload(string rawPayload);
 }

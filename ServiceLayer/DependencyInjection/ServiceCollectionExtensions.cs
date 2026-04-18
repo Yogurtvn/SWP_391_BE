@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddServiceLayer(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddRepositoryLayer(configuration);
+        services.AddHttpClient();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ICartService, CartService>();
         services.AddScoped<ICatalogSupportService, CatalogSupportService>();

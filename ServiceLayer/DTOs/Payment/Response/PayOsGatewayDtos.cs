@@ -35,3 +35,18 @@ public class PayOsVerifiedWebhookData
 
     public string? Reference { get; set; }
 }
+
+public class PayOsPaymentLinkInformationResult
+{
+    public long OrderCode { get; set; }
+
+    public string PaymentLinkId { get; set; } = string.Empty;
+
+    public int Amount { get; set; }
+
+    public int AmountPaid { get; set; }
+
+    public int AmountRemaining { get; set; }
+
+    public string Status { get; set; } = string.Empty;
+}

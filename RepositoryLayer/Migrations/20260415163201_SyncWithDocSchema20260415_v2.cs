@@ -265,7 +265,7 @@ namespace RepositoryLayer.Migrations
                 IF @DefaultLensTypeId IS NULL
                 BEGIN
                     INSERT INTO [LensTypes] ([LensCode], [LensName], [Description], [Price], [IsActive], [CreatedAt])
-                    VALUES ('LENS-MIGRATION-DEFAULT', 'Migration Default Lens', 'Auto-generated to satisfy existing prescription rows.', 0, 0, GETDATE());
+                    VALUES ('LENS-MIGRATION-DEFAULT', N'Tròng kính mặc định chuyển đổi', N'Tròng kính được tạo tự động để tương thích với các đơn theo toa cũ.', 0, 0, GETDATE());
 
                     SET @DefaultLensTypeId = CAST(SCOPE_IDENTITY() AS INT);
                 END

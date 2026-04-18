@@ -5,6 +5,7 @@ using ServiceLayer.Configuration;
 using ServiceLayer.Contracts.Payment;
 using ServiceLayer.DTOs.Payment.Request;
 using ServiceLayer.DTOs.Payment.Response;
+using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -12,8 +13,10 @@ using System.Text.Json;
 namespace ServiceLayer.Services.PaymentManagement;
 
 public class PayOsGatewayClient(
-    IConfiguration configuration) : IPayOsGatewayClient
+    IConfiguration configuration,
+    IHttpClientFactory httpClientFactory) : IPayOsGatewayClient
 {
+    private const string PayOsMerchantApiBaseUrl = "https://api-merchant.payos.vn";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -25,6 +28,8 @@ public class PayOsGatewayClient(
         NormalizeSecret(configuration["PayOS:ClientId"], "PayOS:ClientId"),
         NormalizeSecret(configuration["PayOS:ApiKey"], "PayOS:ApiKey"),
         NormalizeSecret(configuration["PayOS:ChecksumKey"], "PayOS:ChecksumKey"));
+
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
 
     public async Task<PayOsCreatePaymentLinkResult> CreatePaymentLinkAsync(
         PayOsCreateGatewayRequestDto request,
@@ -68,6 +73,66 @@ public class PayOsGatewayClient(
             CheckoutUrl = response.checkoutUrl,
             QrCode = response.qrCode
         };
+    }
+
+    public async Task<PayOsPaymentLinkInformationResult> GetPaymentLinkInformationAsync(
+        long orderCode,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateConfiguration();
+
+        if (orderCode <= 0)
+        {
+            throw new InvalidOperationException("PayOS requires a positive orderCode.");
+        }
+
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(PayOsMerchantApiBaseUrl);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        client.DefaultRequestHeaders.Add("x-client-id", _options.ClientId);
+        client.DefaultRequestHeaders.Add("x-api-key", _options.ApiKey);
+
+        using var response = await client.GetAsync($"/v2/payment-requests/{orderCode}", cancellationToken);
+        var rawPayload = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(
+                $"PayOS payment lookup failed with status {(int)response.StatusCode}: {Truncate(rawPayload, 255)}");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawPayload);
+            var root = document.RootElement;
+            var code = ReadJsonString(root, "code");
+
+            if (!string.Equals(code, "00", StringComparison.OrdinalIgnoreCase))
+            {
+                var desc = ReadJsonString(root, "desc") ?? "PayOS payment lookup failed.";
+                throw new InvalidOperationException(Truncate(desc, 255));
+            }
+
+            if (!TryReadJsonObject(root, "data", out var dataElement))
+            {
+                throw new InvalidOperationException("PayOS payment lookup returned invalid data.");
+            }
+
+            return new PayOsPaymentLinkInformationResult
+            {
+                OrderCode = ReadJsonLong(dataElement, "orderCode"),
+                PaymentLinkId = ReadJsonString(dataElement, "id") ?? string.Empty,
+                Amount = ReadJsonInt(dataElement, "amount"),
+                AmountPaid = ReadJsonInt(dataElement, "amountPaid"),
+                AmountRemaining = ReadJsonInt(dataElement, "amountRemaining"),
+                Status = ReadJsonString(dataElement, "status") ?? string.Empty
+            };
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidOperationException(
+                $"PayOS payment lookup returned malformed JSON: {Truncate(exception.Message, 255)}");
+        }
     }
 
     public PayOsWebhookVerificationResult VerifyWebhookPayload(string rawPayload)
@@ -245,6 +310,83 @@ public class PayOsGatewayClient(
     private static int ToPayOsAmount(decimal amount)
     {
         return Convert.ToInt32(Math.Round(amount, 0, MidpointRounding.AwayFromZero));
+    }
+
+    private static string? ReadJsonString(JsonElement element, string propertyName)
+    {
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue))
+        {
+            return null;
+        }
+
+        return propertyValue.ValueKind == JsonValueKind.String
+            ? propertyValue.GetString()?.Trim()
+            : propertyValue.ToString()?.Trim();
+    }
+
+    private static int ReadJsonInt(JsonElement element, string propertyName)
+    {
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue))
+        {
+            return 0;
+        }
+
+        return propertyValue.ValueKind switch
+        {
+            JsonValueKind.Number when propertyValue.TryGetInt32(out var value) => value,
+            JsonValueKind.Number when propertyValue.TryGetInt64(out var longValue)
+                && longValue is >= int.MinValue and <= int.MaxValue => (int)longValue,
+            _ => int.TryParse(propertyValue.ToString(), out var parsed) ? parsed : 0
+        };
+    }
+
+    private static long ReadJsonLong(JsonElement element, string propertyName)
+    {
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue))
+        {
+            return 0L;
+        }
+
+        return propertyValue.ValueKind switch
+        {
+            JsonValueKind.Number when propertyValue.TryGetInt64(out var value) => value,
+            _ => long.TryParse(propertyValue.ToString(), out var parsed) ? parsed : 0L
+        };
+    }
+
+    private static bool TryReadJsonObject(JsonElement element, string propertyName, out JsonElement objectElement)
+    {
+        objectElement = default;
+
+        if (!TryReadJsonProperty(element, propertyName, out var propertyValue)
+            || propertyValue.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        objectElement = propertyValue;
+        return true;
+    }
+
+    private static bool TryReadJsonProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            value = default;
+            return false;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static string NormalizeDescription(string? description, int paymentId)

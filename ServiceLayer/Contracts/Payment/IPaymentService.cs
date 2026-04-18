@@ -24,6 +24,18 @@ public interface IPaymentService
         int paymentId,
         CancellationToken cancellationToken = default);
 
+    Task<PaymentDetailResponse?> GetPaymentByPayOsOrderCodeAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        long orderCode,
+        CancellationToken cancellationToken = default);
+
+    Task<PayOsPaymentReconciliationResponse> ReconcilePayOsPaymentAsync(
+        int currentUserId,
+        bool canAccessAllOrders,
+        long orderCode,
+        CancellationToken cancellationToken = default);
+
     Task<PaymentStatusUpdatedResponse> UpdatePaymentStatusAsync(
         int paymentId,
         UpdatePaymentStatusRequest request,
