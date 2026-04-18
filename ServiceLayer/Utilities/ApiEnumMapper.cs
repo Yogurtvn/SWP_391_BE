@@ -80,8 +80,8 @@ internal static class ApiEnumMapper
         return normalized switch
         {
             "cod" => SetValue(PaymentMethod.COD, out paymentMethod),
-            "vnpay" => SetValue(PaymentMethod.VNPay, out paymentMethod),
-            "momo" => SetValue(PaymentMethod.Momo, out paymentMethod),
+            "payos" => SetValue(PaymentMethod.PayOS, out paymentMethod),
+            "vnpay" => SetValue(PaymentMethod.PayOS, out paymentMethod), // legacy alias for older FE payloads
             _ => TryParseNumericEnum(normalized, out paymentMethod)
         };
     }
@@ -157,8 +157,7 @@ internal static class ApiEnumMapper
         return paymentMethod switch
         {
             PaymentMethod.COD => "cod",
-            PaymentMethod.VNPay => "vnpay",
-            PaymentMethod.Momo => "momo",
+            PaymentMethod.PayOS => "payos",
             _ => paymentMethod.ToString()
         };
     }

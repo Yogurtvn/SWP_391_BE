@@ -60,8 +60,7 @@ public enum PrescriptionStatus : byte
 public enum PaymentMethod : byte
 {
     COD = 1,
-    VNPay = 2,
-    Momo = 3
+    PayOS = 2
 }
 
 public enum PaymentStatus : byte

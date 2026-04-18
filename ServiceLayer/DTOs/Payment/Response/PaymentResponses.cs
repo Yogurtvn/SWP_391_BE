@@ -79,9 +79,11 @@ public class PaymentActionResponse
     public string? QrCodeUrl { get; set; }
 }
 
-public class VnpayIpnResponse
+public class PayOsWebhookResponse
 {
-    public string RspCode { get; set; } = string.Empty;
+    public bool Success { get; set; }
 
     public string Message { get; set; } = string.Empty;
+
+    public bool Acknowledged { get; set; }
 }

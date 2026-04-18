@@ -106,7 +106,7 @@ public class OrderService(
             paymentMethod,
             orderItems,
             createdByUserId: userId,
-            requestVnpayInitialization: paymentMethod == PaymentMethod.VNPay,
+            requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cartItemsToRemove: cartItems,
             cancellationToken: cancellationToken);
 
@@ -178,7 +178,7 @@ public class OrderService(
                 }
             ],
             createdByUserId: userId,
-            requestVnpayInitialization: paymentMethod == PaymentMethod.VNPay,
+            requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cancellationToken: cancellationToken);
 
         return new BuyNowOrderResponse
@@ -612,7 +612,7 @@ public class OrderService(
         PaymentMethod paymentMethod,
         IReadOnlyList<OrderCreationItem> items,
         int createdByUserId,
-        bool requestVnpayInitialization,
+        bool requestPayOsInitialization,
         IReadOnlyCollection<CartItem>? cartItemsToRemove = null,
         CancellationToken cancellationToken = default)
     {
@@ -731,11 +731,11 @@ public class OrderService(
 
         PaymentActionResponse? paymentAction = null;
 
-        if (requestVnpayInitialization)
+        if (requestPayOsInitialization)
         {
             try
             {
-                paymentAction = await _paymentService.InitializeVnpayPaymentAsync(payment, order, null, cancellationToken);
+                paymentAction = await _paymentService.InitializePayOsPaymentAsync(payment, order, null, cancellationToken);
             }
             catch (ApiException)
             {
@@ -1042,7 +1042,7 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
         }
 
-        if (paymentMethod != PaymentMethod.COD && paymentMethod != PaymentMethod.VNPay)
+        if (paymentMethod != PaymentMethod.COD && paymentMethod != PaymentMethod.PayOS)
         {
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_REQUEST", "Cannot create payment");
         }

@@ -449,7 +449,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
         {
             entity.ToTable("Payments", table =>
             {
-                table.HasCheckConstraint("CK_Payments_PaymentMethod", "[PaymentMethod] IN (1, 2, 3)");
+                table.HasCheckConstraint("CK_Payments_PaymentMethod", "[PaymentMethod] IN (1, 2)");
                 table.HasCheckConstraint("CK_Payments_PaymentStatus", "[PaymentStatus] IN (1, 2, 3)");
             });
 
