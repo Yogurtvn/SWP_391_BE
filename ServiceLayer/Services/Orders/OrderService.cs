@@ -463,12 +463,6 @@ public class OrderService(
         };
     }
 
-        var note = NormalizeOptionalText(request.Note);
-        var orderRepository = _unitOfWork.Repository<Order>();
-        var order = await orderRepository.GetFirstOrDefaultAsync(
-            currentOrder => currentOrder.OrderId == orderId && currentOrder.OrderType == OrderType.Ready,
-            includeProperties: "OrderItems.Variant.Product,OrderItems.Variant.Inventory,OrderStatusHistories.UpdatedByUser,Payments.PaymentHistories",
-            tracked: true);
     public async Task<OrderStatusUpdatedResponse> UpdateOrderStatusAsync(
         int staffUserId,
         int orderId,
