@@ -17,7 +17,9 @@ using ServiceLayer.Contracts.ProductImage;
 using ServiceLayer.Contracts.ProductVariant;
 using ServiceLayer.Contracts.Report;
 using ServiceLayer.Contracts.Security;
+using ServiceLayer.Contracts.Shipping;
 using ServiceLayer.Contracts.StockReceipt;
+using ServiceLayer.DTOs.Shipping;
 using ServiceLayer.Security;
 using ServiceLayer.Services.Auth;
 using ServiceLayer.Services.CartManagement;
@@ -34,6 +36,7 @@ using ServiceLayer.Services.ProductImageManagement;
 using ServiceLayer.Services.ProductManagement;
 using ServiceLayer.Services.ProductVariantManagement;
 using ServiceLayer.Services.ReportManagement;
+using ServiceLayer.Services.Shipping;
 using ServiceLayer.Services.StockReceiptManagement;
 
 namespace ServiceLayer.DependencyInjection;
@@ -62,6 +65,22 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IReportService, ReportService>(); // Đăng ký ReportService vào DI container
         services.AddScoped<IUserService, UserService>(); // Đăng ký UserService vào DI container
         services.AddScoped<ICategoryService, CategoryService>(); // Đăng ký CategoryService vào DI container
+
+        // GHN Shipping Integration
+        services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
+        services.AddHttpClient("GHN", (sp, client) =>
+        {
+            var settings = configuration.GetSection(GhnSettings.SectionName).Get<GhnSettings>();
+            if (settings != null)
+            {
+                client.BaseAddress = new Uri(settings.BaseUrl);
+                client.DefaultRequestHeaders.Add("Token", settings.Token);
+                // Một số API GHN yêu cầu ShopId trong header (tùy phiên bản)
+                client.DefaultRequestHeaders.Add("ShopId", settings.ShopId.ToString());
+            }
+        });
+        services.AddScoped<IShippingService, GhnShippingService>();
+
         return services;
     }
 }
