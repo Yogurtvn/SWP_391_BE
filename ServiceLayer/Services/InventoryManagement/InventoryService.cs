@@ -1,129 +1,184 @@
 using RepositoryLayer.Common;
+using RepositoryLayer.Entities;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.DTOs.Inventory.Request;
 using ServiceLayer.DTOs.Inventory.Response;
-using InventoryEntity = RepositoryLayer.Entities.Inventory; // Alias để tránh xung đột namespace với folder Inventory
+using ServiceLayer.Exceptions;
+using System.Net;
+using InventoryEntity = RepositoryLayer.Entities.Inventory;
 
-namespace ServiceLayer.Services.InventoryManagement; // Dùng "InventoryManagement" thay vì "Inventory" để tránh xung đột namespace với RepositoryLayer.Entities.Inventory
+namespace ServiceLayer.Services.InventoryManagement;
 
-// Service xử lý logic nghiệp vụ quản lý Inventory (tồn kho), sử dụng UnitOfWork + GenericRepository
 public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
 {
-    private readonly IUnitOfWork _unitOfWork = unitOfWork; // Inject UnitOfWork để truy cập repository và quản lý transaction
+    private readonly IUnitOfWork _unitOfWork = unitOfWork;
 
-    // Lấy danh sách inventory có phân trang, lọc và tìm kiếm (copy logic pagination từ PolicyService)
     public async Task<PagedResult<InventoryListDtoResponse>> GetInventoriesAsync(
         PaginationRequest paginationRequest,
-        int? variantId,                                   // Lọc theo variant cụ thể
-        int? productId,                                   // Lọc theo product
-        bool? isPreOrderAllowed,                          // Lọc theo trạng thái pre-order
-        string? search,                                   // Tìm kiếm
+        int? variantId,
+        int? productId,
+        bool? isPreOrderAllowed,
+        string? search,
+        string? sortBy,
+        string? sortOrder,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(paginationRequest); // Kiểm tra paginationRequest không được null
+        ArgumentNullException.ThrowIfNull(paginationRequest);
 
-        var repository = _unitOfWork.Repository<InventoryEntity>(); // Lấy repository cho Inventory entity
+        var repository = _unitOfWork.Repository<InventoryEntity>();
+        var normalizedSearch = NormalizeText(search);
+        var (normalizedSortBy, sortDescending) = NormalizeSort(sortBy, sortOrder);
 
         var pagedInventories = await repository.GetPagedAsync(
-            paginationRequest: paginationRequest,         // Truyền thông tin phân trang (page, pageSize)
+            paginationRequest: paginationRequest,
             filter: inventory =>
-                (!variantId.HasValue || inventory.VariantId == variantId.Value) &&           // Lọc theo variantId nếu có
-                (!productId.HasValue || inventory.Variant.ProductId == productId.Value) &&   // Lọc theo productId qua navigation property
-                (!isPreOrderAllowed.HasValue || inventory.IsPreOrderAllowed == isPreOrderAllowed.Value), // Lọc theo trạng thái pre-order nếu có
-            orderBy: query => query.OrderBy(inventory => inventory.VariantId),               // Sắp xếp theo VariantId tăng dần
-            includeProperties: "Variant",                 // Include navigation property Variant để lọc theo ProductId
-            tracked: false,                               // Không cần track vì chỉ đọc dữ liệu
+                (!variantId.HasValue || inventory.VariantId == variantId.Value) &&
+                (!productId.HasValue || inventory.Variant.ProductId == productId.Value) &&
+                (!isPreOrderAllowed.HasValue || inventory.IsPreOrderAllowed == isPreOrderAllowed.Value) &&
+                (normalizedSearch == null
+                    || inventory.Variant.Sku.Contains(normalizedSearch)
+                    || (inventory.Variant.Color != null && inventory.Variant.Color.Contains(normalizedSearch))
+                    || (inventory.Variant.Size != null && inventory.Variant.Size.Contains(normalizedSearch))
+                    || (inventory.Variant.FrameType != null && inventory.Variant.FrameType.Contains(normalizedSearch))
+                    || inventory.Variant.Product.ProductName.Contains(normalizedSearch)),
+            orderBy: query => ApplyOrdering(query, normalizedSortBy, sortDescending),
+            includeProperties: "Variant.Product",
+            tracked: false,
             cancellationToken: cancellationToken);
 
         var items = pagedInventories.Items
-            .Select(MapToListDto)                         // Chuyển đổi từ Entity sang DTO danh sách
+            .Select(MapToListDto)
             .ToList();
 
-        return PagedResult<InventoryListDtoResponse>.Create( // Tạo PagedResult mới với DTO items (copy pattern từ PolicyService)
+        return PagedResult<InventoryListDtoResponse>.Create(
             items,
             pagedInventories.Page,
             pagedInventories.PageSize,
             pagedInventories.TotalItems);
     }
 
-    // Lấy chi tiết inventory theo VariantId
     public async Task<InventoryDtoResponse?> GetInventoryByVariantIdAsync(int variantId, CancellationToken cancellationToken = default)
     {
-        var repository = _unitOfWork.Repository<InventoryEntity>(); // Lấy repository cho Inventory entity
+        var repository = _unitOfWork.Repository<InventoryEntity>();
+        var inventory = await repository.GetByIdAsync(variantId);
 
-        var inventory = await repository.GetByIdAsync(variantId);   // Tìm inventory theo primary key (VariantId)
-
-        return inventory is null ? null : MapToDto(inventory);      // Trả về null nếu không tìm thấy, hoặc DTO nếu có
+        return inventory is null ? null : MapToDto(inventory);
     }
 
-    // Admin/Staff cập nhật tồn kho trực tiếp (PUT)
     public async Task<bool> UpdateInventoryAsync(int variantId, UpdateInventoryRequest request, CancellationToken cancellationToken = default)
     {
-        var repository = _unitOfWork.Repository<InventoryEntity>(); // Lấy repository cho Inventory entity
-
-        var inventory = await repository.GetByIdAsync(variantId);   // Tìm inventory cần update (tracked mặc định)
+        var repository = _unitOfWork.Repository<InventoryEntity>();
+        var inventory = await repository.GetByIdAsync(variantId);
 
         if (inventory is null)
         {
-            return false;                                           // Không tìm thấy → trả về false
+            return false;
         }
 
-        // Cập nhật tất cả các field từ request
-        inventory.Quantity = request.Quantity;                       // Cập nhật số lượng tồn kho
-        inventory.IsPreOrderAllowed = request.IsPreOrderAllowed;    // Cập nhật trạng thái pre-order
-        inventory.ExpectedRestockDate = request.ExpectedRestockDate; // Cập nhật ngày dự kiến nhập hàng
-        inventory.PreOrderNote = request.PreOrderNote?.Trim();      // Cập nhật ghi chú pre-order (trim khoảng trắng)
+        inventory.Quantity = request.Quantity;
+        inventory.IsPreOrderAllowed = request.IsPreOrderAllowed;
+        inventory.ExpectedRestockDate = request.ExpectedRestockDate;
+        inventory.PreOrderNote = request.PreOrderNote?.Trim();
 
-        repository.Update(inventory);                               // Đánh dấu entity đã thay đổi
-        await _unitOfWork.SaveChangesAsync(cancellationToken);      // Lưu thay đổi vào DB
+        repository.Update(inventory);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return true;                                                // Cập nhật thành công
+        return true;
     }
 
-    // Bật/tắt cài đặt pre-order riêng (PATCH) - chỉ cập nhật các field liên quan pre-order
     public async Task<bool> UpdatePreOrderAsync(int variantId, UpdatePreOrderRequest request, CancellationToken cancellationToken = default)
     {
-        var repository = _unitOfWork.Repository<InventoryEntity>(); // Lấy repository cho Inventory entity
-
-        var inventory = await repository.GetByIdAsync(variantId);   // Tìm inventory cần update (tracked mặc định)
+        var repository = _unitOfWork.Repository<InventoryEntity>();
+        var inventory = await repository.GetByIdAsync(variantId);
 
         if (inventory is null)
         {
-            return false;                                           // Không tìm thấy → trả về false
+            return false;
         }
 
-        // Chỉ cập nhật các field pre-order, KHÔNG đụng đến Quantity
-        inventory.IsPreOrderAllowed = request.IsPreOrderAllowed;    // Bật/tắt pre-order
-        inventory.ExpectedRestockDate = request.ExpectedRestockDate; // Cập nhật ngày dự kiến nhập hàng
-        inventory.PreOrderNote = request.PreOrderNote?.Trim();      // Cập nhật ghi chú pre-order (trim khoảng trắng)
+        inventory.IsPreOrderAllowed = request.IsPreOrderAllowed;
+        inventory.ExpectedRestockDate = request.ExpectedRestockDate;
+        inventory.PreOrderNote = request.PreOrderNote?.Trim();
 
-        repository.Update(inventory);                               // Đánh dấu entity đã thay đổi
-        await _unitOfWork.SaveChangesAsync(cancellationToken);      // Lưu thay đổi vào DB
+        repository.Update(inventory);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return true;                                                // Cập nhật thành công
+        return true;
     }
 
-    // Helper method: chuyển đổi từ Entity sang DTO chi tiết (dùng cho GET by ID)
     private static InventoryDtoResponse MapToDto(InventoryEntity inventory)
     {
         return new InventoryDtoResponse
         {
-            VariantId = inventory.VariantId,               // Map VariantId
-            Quantity = inventory.Quantity,                  // Map Quantity
-            IsPreOrderAllowed = inventory.IsPreOrderAllowed // Map IsPreOrderAllowed
+            VariantId = inventory.VariantId,
+            Quantity = inventory.Quantity,
+            IsPreOrderAllowed = inventory.IsPreOrderAllowed
         };
     }
 
-    // Helper method: chuyển đổi từ Entity sang DTO danh sách (dùng cho GET list, thêm ExpectedRestockDate)
     private static InventoryListDtoResponse MapToListDto(InventoryEntity inventory)
     {
         return new InventoryListDtoResponse
         {
-            VariantId = inventory.VariantId,                     // Map VariantId
-            Quantity = inventory.Quantity,                        // Map Quantity
-            IsPreOrderAllowed = inventory.IsPreOrderAllowed,     // Map IsPreOrderAllowed
-            ExpectedRestockDate = inventory.ExpectedRestockDate  // Map ExpectedRestockDate (nullable)
+            VariantId = inventory.VariantId,
+            Quantity = inventory.Quantity,
+            IsPreOrderAllowed = inventory.IsPreOrderAllowed,
+            ExpectedRestockDate = inventory.ExpectedRestockDate
         };
+    }
+
+    private static string? NormalizeText(string? value)
+    {
+        var normalizedValue = value?.Trim();
+        return string.IsNullOrWhiteSpace(normalizedValue) ? null : normalizedValue;
+    }
+
+    private static (string SortBy, bool SortDescending) NormalizeSort(string? sortBy, string? sortOrder)
+    {
+        var normalizedSortBy = NormalizeText(sortBy)?.ToLowerInvariant() ?? "variantid";
+        var normalizedSortOrder = NormalizeText(sortOrder)?.ToLowerInvariant();
+
+        if (normalizedSortBy is not ("variantid" or "quantity" or "expectedrestockdate"))
+        {
+            throw CreateInvalidQueryException("sortBy", "sortBy is invalid");
+        }
+
+        return normalizedSortOrder switch
+        {
+            null => (normalizedSortBy, false),
+            "asc" => (normalizedSortBy, false),
+            "desc" => (normalizedSortBy, true),
+            _ => throw CreateInvalidQueryException("sortOrder", "sortOrder must be 'asc' or 'desc'")
+        };
+    }
+
+    private static IOrderedQueryable<InventoryEntity> ApplyOrdering(
+        IQueryable<InventoryEntity> query,
+        string sortBy,
+        bool sortDescending)
+    {
+        return sortBy switch
+        {
+            "quantity" when sortDescending => query.OrderByDescending(inventory => inventory.Quantity)
+                .ThenByDescending(inventory => inventory.VariantId),
+            "quantity" => query.OrderBy(inventory => inventory.Quantity)
+                .ThenBy(inventory => inventory.VariantId),
+            "expectedrestockdate" when sortDescending => query.OrderByDescending(inventory => inventory.ExpectedRestockDate)
+                .ThenByDescending(inventory => inventory.VariantId),
+            "expectedrestockdate" => query.OrderBy(inventory => inventory.ExpectedRestockDate)
+                .ThenBy(inventory => inventory.VariantId),
+            _ when sortDescending => query.OrderByDescending(inventory => inventory.VariantId),
+            _ => query.OrderBy(inventory => inventory.VariantId)
+        };
+    }
+
+    private static ApiException CreateInvalidQueryException(string field, string issue)
+    {
+        return new ApiException(
+            (int)HttpStatusCode.BadRequest,
+            "INVALID_QUERY",
+            "Invalid inventory query",
+            new { field, issue });
     }
 }
