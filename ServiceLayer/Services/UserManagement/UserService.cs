@@ -94,6 +94,8 @@ public class UserService(IUnitOfWork unitOfWork, IPasswordHasher passwordHasher)
             UserId = u.UserId,
             Email = u.Email,
             FullName = u.FullName,
+            Phone = u.Phone,
+            CreateAt = u.CreatedAt,
             Role = u.Role.ToString().ToLower(),
             IsActive = u.IsActive
         }).ToList();

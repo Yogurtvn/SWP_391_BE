@@ -14,6 +14,12 @@ public class UserListItemResponse
     // Họ tên đầy đủ
     public string? FullName { get; set; }
 
+    // Số điện thoại của user
+    public string? Phone { get; set; }
+
+    // Thời điểm tạo tài khoản
+    public DateTime CreateAt { get; set; }
+
     // Vai trò của user (admin, staff, customer) - trả về dạng chuỗi lowercase
     public string Role { get; set; } = string.Empty;
 
