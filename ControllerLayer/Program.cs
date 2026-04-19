@@ -15,6 +15,7 @@ var jwtIssuer = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Issuer
 var jwtAudience = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Audience");
 var jwtKey = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Key");
 var corsAllowedOrigins = GetCorsAllowedOrigins(builder.Configuration);
+var swaggerEnabled = builder.Configuration.GetValue<bool>("Swagger:Enabled");
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -112,6 +113,7 @@ builder.Services.AddAuthorizationBuilder()
         .Build());
 
 var app = builder.Build();
+var shouldEnableSwagger = app.Environment.IsDevelopment() || swaggerEnabled;
 
 // Apply pending migrations automatically on startup.
 using (var scope = app.Services.CreateScope())
@@ -120,9 +122,8 @@ using (var scope = app.Services.CreateScope())
     dbContext.Database.Migrate();
 }
 
-if (app.Environment.IsDevelopment())
+if (shouldEnableSwagger)
 {
-    app.UseSwagger();
     app.UseSwaggerUI();
 }
 
@@ -139,6 +140,12 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+if (shouldEnableSwagger)
+{
+    app.MapSwagger().AllowAnonymous();
+    app.MapGet("/", () => Results.Redirect("/swagger")).AllowAnonymous();
+}
 
 app.Run();
 
