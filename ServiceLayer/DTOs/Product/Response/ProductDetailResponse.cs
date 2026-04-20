@@ -9,11 +9,15 @@ public class ProductDetailResponse
 
     public string ProductName { get; set; } = string.Empty;
 
+    public int? CategoryId { get; set; }
+
     public string ProductType { get; set; } = string.Empty;
 
     public string? Description { get; set; }
 
     public decimal BasePrice { get; set; }
+
+    public bool IsActive { get; set; }
 
     public bool PrescriptionCompatible { get; set; }
 
