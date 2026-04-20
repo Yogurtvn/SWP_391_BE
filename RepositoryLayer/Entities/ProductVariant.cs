@@ -18,7 +18,11 @@ public class ProductVariant
 
     public bool IsActive { get; set; }
 
+    public int? PromotionId { get; set; }
+
     public Product Product { get; set; } = null!;
+
+    public Promotion? Promotion { get; set; }
 
     public Inventory? Inventory { get; set; }
 

@@ -84,6 +84,8 @@ public class OrderService(
                 .ThenInclude(variant => variant.Product)
             .Include(item => item.Variant)
                 .ThenInclude(variant => variant.Inventory)
+            .Include(item => item.Variant)
+                .ThenInclude(variant => variant.Promotion)
             .Include(item => item.CartPrescriptionDetail)
                 .ThenInclude(detail => detail!.LensType)
             .Where(item => cartItemIds.Contains(item.CartItemId) && item.Cart.UserId == userId)
@@ -145,6 +147,7 @@ public class OrderService(
         var variant = await _dbContext.ProductVariants
             .Include(item => item.Product)
             .Include(item => item.Inventory)
+            .Include(item => item.Promotion)
             .FirstOrDefaultAsync(
                 item => item.VariantId == request.VariantId,
                 cancellationToken);
@@ -159,6 +162,8 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Selected variant is out of stock");
         }
 
+        var pricing = PromotionPricingHelper.Calculate(variant, now);
+
         var result = await CreateOrderAsync(
             userId,
             OrderType.Ready,
@@ -172,8 +177,13 @@ public class OrderService(
                     Variant = variant,
                     Quantity = request.Quantity,
                     SelectedColor = NormalizeText(variant.Color),
-                    UnitPrice = variant.Price,
-                    LineTotal = variant.Price * request.Quantity,
+                    OriginalUnitPrice = pricing.OriginalPrice,
+                    DiscountPercent = pricing.DiscountPercent,
+                    DiscountAmount = pricing.DiscountAmount,
+                    FinalUnitPrice = pricing.FinalPrice,
+                    UnitPrice = pricing.FinalPrice,
+                    PromotionNameSnapshot = pricing.PromotionName,
+                    LineTotal = pricing.FinalPrice * request.Quantity,
                     ReserveInventory = true
                 }
             ],
@@ -421,6 +431,11 @@ public class OrderService(
                     VariantId = item.VariantId,
                     Quantity = item.Quantity,
                     UnitPrice = item.UnitPrice,
+                    OriginalUnitPrice = item.OriginalUnitPrice,
+                    DiscountPercent = item.DiscountPercent,
+                    DiscountAmount = item.DiscountAmount,
+                    FinalUnitPrice = item.FinalUnitPrice,
+                    PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice
                 })
@@ -458,6 +473,11 @@ public class OrderService(
             Quantity = orderItem.Quantity,
             SelectedColor = orderItem.SelectedColor,
             TotalPrice = (orderItem.UnitPrice + (orderItem.LensPrice ?? 0m)) * orderItem.Quantity,
+            OriginalUnitPrice = orderItem.OriginalUnitPrice,
+            DiscountPercent = orderItem.DiscountPercent,
+            DiscountAmount = orderItem.DiscountAmount,
+            FinalUnitPrice = orderItem.FinalUnitPrice,
+            PromotionNameSnapshot = orderItem.PromotionNameSnapshot,
             LensTypeId = orderItem.LensTypeId,
             LensPrice = orderItem.LensPrice
         };
@@ -688,7 +708,12 @@ public class OrderService(
                     VariantId = item.Variant.VariantId,
                     Quantity = item.Quantity,
                     SelectedColor = item.SelectedColor,
+                    OriginalUnitPrice = item.OriginalUnitPrice,
+                    DiscountPercent = item.DiscountPercent,
+                    DiscountAmount = item.DiscountAmount,
+                    FinalUnitPrice = item.FinalUnitPrice,
                     UnitPrice = item.UnitPrice,
+                    PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice,
                     Prescription = item.Prescription
@@ -762,6 +787,8 @@ public class OrderService(
                     throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
                 }
 
+                var pricing = PromotionPricingHelper.Calculate(item.Variant, now);
+
                 if (orderType == OrderType.Prescription)
                 {
                     var detail = item.CartPrescriptionDetail;
@@ -781,8 +808,13 @@ public class OrderService(
                         Variant = item.Variant,
                         Quantity = item.Quantity,
                         SelectedColor = item.SelectedColor,
-                        UnitPrice = item.UnitPrice,
-                        LineTotal = item.TotalPrice,
+                        OriginalUnitPrice = pricing.OriginalPrice,
+                        DiscountPercent = pricing.DiscountPercent,
+                        DiscountAmount = pricing.DiscountAmount,
+                        FinalUnitPrice = pricing.FinalPrice,
+                        UnitPrice = pricing.FinalPrice,
+                        PromotionNameSnapshot = pricing.PromotionName,
+                        LineTotal = (pricing.FinalPrice + detail.TotalLensPrice) * item.Quantity,
                         ReserveInventory = true,
                         LensTypeId = detail.LensTypeId,
                         LensPrice = detail.TotalLensPrice,
@@ -816,8 +848,13 @@ public class OrderService(
                     Variant = item.Variant,
                     Quantity = item.Quantity,
                     SelectedColor = item.SelectedColor,
-                    UnitPrice = item.UnitPrice,
-                    LineTotal = item.TotalPrice,
+                    OriginalUnitPrice = pricing.OriginalPrice,
+                    DiscountPercent = pricing.DiscountPercent,
+                    DiscountAmount = pricing.DiscountAmount,
+                    FinalUnitPrice = pricing.FinalPrice,
+                    UnitPrice = pricing.FinalPrice,
+                    PromotionNameSnapshot = pricing.PromotionName,
+                    LineTotal = pricing.FinalPrice * item.Quantity,
                     ReserveInventory = orderType == OrderType.Ready,
                     RequirePreOrderEnabled = orderType == OrderType.PreOrder
                 };
@@ -1199,7 +1236,12 @@ public class OrderService(
                     VariantColor = item.Variant.Color,
                     SelectedColor = item.SelectedColor,
                     Quantity = item.Quantity,
+                    OriginalUnitPrice = item.OriginalUnitPrice,
+                    DiscountPercent = item.DiscountPercent,
+                    DiscountAmount = item.DiscountAmount,
+                    FinalUnitPrice = item.FinalUnitPrice,
                     UnitPrice = item.UnitPrice,
+                    PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity
                 })
                 .ToList(),
@@ -1254,7 +1296,17 @@ public class OrderService(
 
         public string? SelectedColor { get; init; }
 
+        public decimal OriginalUnitPrice { get; init; }
+
+        public decimal DiscountPercent { get; init; }
+
+        public decimal DiscountAmount { get; init; }
+
+        public decimal FinalUnitPrice { get; init; }
+
         public decimal UnitPrice { get; init; }
+
+        public string? PromotionNameSnapshot { get; init; }
 
         public decimal LineTotal { get; init; }
 

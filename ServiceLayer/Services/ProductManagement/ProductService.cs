@@ -9,6 +9,7 @@ using ServiceLayer.DTOs.Product.Response;
 using ServiceLayer.DTOs.ProductImage.Response;
 using ServiceLayer.DTOs.ProductVariant.Response;
 using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
 using System.Net;
 
 namespace ServiceLayer.Services.ProductManagement;
@@ -96,7 +97,7 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         var repository = _unitOfWork.Repository<RepositoryLayer.Entities.Product>();
         var product = await repository.GetFirstOrDefaultAsync(
             productEntity => productEntity.ProductId == productId && (includeInactive || productEntity.IsActive),
-            includeProperties: "Variants.Inventory,Images",
+            includeProperties: "Variants.Inventory,Variants.Promotion,Images",
             tracked: false);
 
         if (product is null)
@@ -104,7 +105,7 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             return null;
         }
 
-        return MapToDetailResponse(product, includeInactive);
+        return MapToDetailResponse(product, includeInactive, DateTime.UtcNow);
     }
 
     public async Task<ProductIdResponse> CreateProductAsync(CreateProductRequest request, CancellationToken cancellationToken = default)
@@ -295,11 +296,14 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         };
     }
 
-    private static ProductDetailResponse MapToDetailResponse(RepositoryLayer.Entities.Product product, bool includeInactive)
+    private static ProductDetailResponse MapToDetailResponse(
+        RepositoryLayer.Entities.Product product,
+        bool includeInactive,
+        DateTime currentTime)
     {
         var variants = GetVisibleVariants(product, includeInactive)
             .OrderBy(variant => variant.VariantId)
-            .Select(MapVariantToListItem)
+            .Select(variant => MapVariantToListItem(variant, currentTime))
             .ToList();
         var images = product.Images
             .OrderBy(image => image.DisplayOrder)
@@ -322,8 +326,10 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         };
     }
 
-    private static ProductVariantListItemResponse MapVariantToListItem(ProductVariant variant)
+    private static ProductVariantListItemResponse MapVariantToListItem(ProductVariant variant, DateTime currentTime)
     {
+        var pricing = PromotionPricingHelper.Calculate(variant, currentTime);
+
         return new ProductVariantListItemResponse
         {
             VariantId = variant.VariantId,
@@ -331,6 +337,10 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             Color = variant.Color,
             Size = variant.Size,
             Price = variant.Price,
+            OriginalPrice = pricing.OriginalPrice,
+            DiscountPercent = pricing.DiscountPercent,
+            DiscountAmount = pricing.DiscountAmount,
+            FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
             IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false
         };

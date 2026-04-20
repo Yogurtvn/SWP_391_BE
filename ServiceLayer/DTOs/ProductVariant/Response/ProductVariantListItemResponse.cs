@@ -12,6 +12,14 @@ public class ProductVariantListItemResponse
 
     public decimal Price { get; set; }
 
+    public decimal OriginalPrice { get; set; }
+
+    public decimal DiscountPercent { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
+    public decimal FinalPrice { get; set; }
+
     public int Quantity { get; set; }
 
     public bool IsPreOrderAllowed { get; set; }
