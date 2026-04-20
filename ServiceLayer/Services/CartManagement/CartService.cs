@@ -116,6 +116,12 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
+            var isPromotionActive = variant.Promotion is { IsActive: true } && variant.Promotion.StartAt <= now && variant.Promotion.EndAt >= now;
+            var discountPercent = isPromotionActive ? variant.Promotion!.DiscountPercent : 0m;
+            var originalUnitPrice = variant.Price;
+            var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
+            var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+
             var cart = await GetOrCreateCartAsync(userId, now, cancellationToken);
             var cartItem = new CartItem
             {
@@ -125,8 +131,12 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 OrderType = orderType,
                 Quantity = quantity,
                 SelectedColor = NormalizeText(variant.Color),
-                UnitPrice = variant.Price,
-                TotalPrice = variant.Price * quantity,
+                OriginalUnitPrice = originalUnitPrice,
+                DiscountPercent = discountPercent,
+                DiscountAmount = discountAmount,
+                FinalUnitPrice = finalUnitPrice,
+                UnitPrice = finalUnitPrice,
+                TotalPrice = finalUnitPrice * quantity,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -186,9 +196,21 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
 
         ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity);
 
+        var now = DateTime.UtcNow;
+        var isPromotionActive = cartItem.Variant.Promotion is { IsActive: true } && cartItem.Variant.Promotion.StartAt <= now && cartItem.Variant.Promotion.EndAt >= now;
+        var discountPercent = isPromotionActive ? cartItem.Variant.Promotion!.DiscountPercent : 0m;
+        var originalUnitPrice = cartItem.Variant.Price;
+        var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
+        var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+
         cartItem.Quantity = quantity;
-        cartItem.TotalPrice = cartItem.UnitPrice * quantity;
-        cartItem.UpdatedAt = DateTime.UtcNow;
+        cartItem.OriginalUnitPrice = originalUnitPrice;
+        cartItem.DiscountPercent = discountPercent;
+        cartItem.DiscountAmount = discountAmount;
+        cartItem.FinalUnitPrice = finalUnitPrice;
+        cartItem.UnitPrice = finalUnitPrice;
+        cartItem.TotalPrice = finalUnitPrice * quantity;
+        cartItem.UpdatedAt = now;
         cartItem.Cart.UpdatedAt = cartItem.UpdatedAt;
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -251,8 +273,14 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 "lensTypeId must reference an existing active lens type");
         }
 
-        var pricing = CalculatePrescriptionPricing(variant.Price, lensType.Price, preparedRequest.Quantity);
         var now = DateTime.UtcNow;
+        var isPromotionActive = variant.Promotion is { IsActive: true } && variant.Promotion.StartAt <= now && variant.Promotion.EndAt >= now;
+        var discountPercent = isPromotionActive ? variant.Promotion!.DiscountPercent : 0m;
+        var originalUnitPrice = variant.Price;
+        var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
+        var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+
+        var pricing = CalculatePrescriptionPricing(finalUnitPrice, lensType.Price, preparedRequest.Quantity);
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
         var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
 
@@ -269,7 +297,11 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 OrderType = OrderType.Prescription,
                 Quantity = preparedRequest.Quantity,
                 SelectedColor = NormalizeText(variant.Color),
-                UnitPrice = variant.Price,
+                OriginalUnitPrice = originalUnitPrice,
+                DiscountPercent = discountPercent,
+                DiscountAmount = discountAmount,
+                FinalUnitPrice = finalUnitPrice,
+                UnitPrice = finalUnitPrice,
                 TotalPrice = pricing.TotalPrice,
                 CreatedAt = now,
                 UpdatedAt = now
@@ -340,15 +372,25 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 "lensTypeId must reference an existing active lens type");
         }
 
-        var pricing = CalculatePrescriptionPricing(variant.Price, lensType.Price, preparedRequest.Quantity);
         var now = DateTime.UtcNow;
+        var isPromotionActive = variant.Promotion is { IsActive: true } && variant.Promotion.StartAt <= now && variant.Promotion.EndAt >= now;
+        var discountPercent = isPromotionActive ? variant.Promotion!.DiscountPercent : 0m;
+        var originalUnitPrice = variant.Price;
+        var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
+        var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+
+        var pricing = CalculatePrescriptionPricing(finalUnitPrice, lensType.Price, preparedRequest.Quantity);
         var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
 
         cartItem.VariantId = variant.VariantId;
         cartItem.Quantity = preparedRequest.Quantity;
         cartItem.SelectedColor = NormalizeText(variant.Color);
         cartItem.OrderType = OrderType.Prescription;
-        cartItem.UnitPrice = variant.Price;
+        cartItem.OriginalUnitPrice = originalUnitPrice;
+        cartItem.DiscountPercent = discountPercent;
+        cartItem.DiscountAmount = discountAmount;
+        cartItem.FinalUnitPrice = finalUnitPrice;
+        cartItem.UnitPrice = finalUnitPrice;
         cartItem.TotalPrice = pricing.TotalPrice;
         cartItem.UpdatedAt = now;
         cartItem.Cart.UpdatedAt = now;
@@ -499,7 +541,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             variant => variant.VariantId == variantId
                 && variant.IsActive
                 && variant.Product.IsActive,
-            includeProperties: "Product,Inventory",
+            includeProperties: "Product,Inventory,Promotion",
             tracked: false);
     }
 
@@ -512,7 +554,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 && variant.Product.IsActive
                 && variant.Product.ProductType == ProductType.Frame
                 && variant.Product.PrescriptionCompatible,
-            includeProperties: "Product",
+            includeProperties: "Product,Promotion",
             tracked: false);
     }
 
@@ -550,6 +592,10 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             OrderType = ToApiOrderType(cartItem.OrderType),
             Quantity = cartItem.Quantity,
             UnitPrice = cartItem.UnitPrice,
+            OriginalUnitPrice = cartItem.OriginalUnitPrice,
+            DiscountPercent = cartItem.DiscountPercent,
+            DiscountAmount = cartItem.DiscountAmount,
+            FinalUnitPrice = cartItem.FinalUnitPrice,
             TotalPrice = cartItem.TotalPrice,
             Prescription = cartItem.CartPrescriptionDetail is null
                 ? null

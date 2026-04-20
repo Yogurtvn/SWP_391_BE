@@ -20,6 +20,14 @@ public class CartItem
 
     public decimal UnitPrice { get; set; }
 
+    public decimal OriginalUnitPrice { get; set; }
+
+    public decimal DiscountPercent { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
+    public decimal FinalUnitPrice { get; set; }
+
     public decimal TotalPrice { get; set; }
 
     public DateTime CreatedAt { get; set; }

@@ -57,6 +57,16 @@ public class OrderItemResponse
 
     public decimal UnitPrice { get; set; }
 
+    public decimal OriginalUnitPrice { get; set; }
+
+    public decimal DiscountPercent { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
+    public decimal FinalUnitPrice { get; set; }
+
+    public string? PromotionNameSnapshot { get; set; }
+
     public decimal LineTotal { get; set; }
 }
 
