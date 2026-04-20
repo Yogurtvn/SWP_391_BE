@@ -74,6 +74,7 @@ public class OrderService(
         var receiverName = NormalizeRequiredText(request.ReceiverName, "receiverName");
         var receiverPhone = NormalizeRequiredText(request.ReceiverPhone, "receiverPhone");
         var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "shippingAddress");
+        var shippingFee = NormalizeMoney(request.ShippingFee, "shippingFee");
         var paymentMethod = ParsePaymentMethod(request.PaymentMethod);
         var cartItemIds = PrepareCartItemIds(request.CartItemIds);
         var now = DateTime.UtcNow;
@@ -107,6 +108,7 @@ public class OrderService(
             shippingAddress,
             paymentMethod,
             orderItems,
+            shippingFee,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cartItemsToRemove: cartItems,
@@ -187,6 +189,7 @@ public class OrderService(
                     ReserveInventory = true
                 }
             ],
+            shippingFee: 0m,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cancellationToken: cancellationToken);
@@ -631,6 +634,7 @@ public class OrderService(
         string shippingAddress,
         PaymentMethod paymentMethod,
         IReadOnlyList<OrderCreationItem> items,
+        decimal shippingFee,
         int createdByUserId,
         bool requestPayOsInitialization,
         IReadOnlyCollection<CartItem>? cartItemsToRemove = null,
@@ -720,6 +724,7 @@ public class OrderService(
                 });
             }
 
+            order.TotalAmount += shippingFee;
             payment.Amount = order.TotalAmount;
             order.Payments.Add(payment);
 
@@ -1155,6 +1160,16 @@ public class OrderService(
     {
         var normalizedValue = value?.Trim();
         return string.IsNullOrWhiteSpace(normalizedValue) ? null : normalizedValue;
+    }
+
+    private static decimal NormalizeMoney(decimal value, string field)
+    {
+        if (value < 0m)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", $"{field} cannot be negative");
+        }
+
+        return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     }
 
     private static string? NormalizeSortField(string? value)

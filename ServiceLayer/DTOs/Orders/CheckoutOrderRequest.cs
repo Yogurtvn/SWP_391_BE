@@ -20,6 +20,9 @@ public class CheckoutOrderRequest
     [MaxLength(500)]
     public string ShippingAddress { get; set; } = string.Empty;
 
+    [Range(typeof(decimal), "0", "99999999.99")]
+    public decimal ShippingFee { get; set; }
+
     [Required]
     [MaxLength(20)]
     public string PaymentMethod { get; set; } = string.Empty;
