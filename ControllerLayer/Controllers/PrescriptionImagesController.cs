@@ -1,6 +1,7 @@
 using ControllerLayer.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using ServiceLayer.Contracts.Storage;
 using ServiceLayer.DTOs.Cart.Response;
 using ServiceLayer.Exceptions;
 
@@ -8,9 +9,9 @@ namespace ControllerLayer.Controllers;
 
 [Route("api/prescription-images")]
 [ApiController]
-public class PrescriptionImagesController(IWebHostEnvironment environment) : ApiControllerBase
+public class PrescriptionImagesController(IImageStorageService imageStorageService) : ApiControllerBase
 {
-    private readonly IWebHostEnvironment _environment = environment;
+    private readonly IImageStorageService _imageStorageService = imageStorageService;
 
     [Authorize(Roles = "Customer")]
     [HttpPost]
@@ -35,72 +36,58 @@ public class PrescriptionImagesController(IWebHostEnvironment environment) : Api
             return BadRequest(CreateInvalidUploadResponse("file", "Uploaded file must be image content"));
         }
 
-        string? savedFileUrl = null;
+        string? uploadedPublicId = null;
 
         try
         {
-            // TODO: apply a file size limit after a shared project rule is defined in API_SPEC.md.
-            var result = await SaveFileAsync(request.File, cancellationToken);
-            savedFileUrl = result.FileUrl;
-            return Ok(result);
+            var uploadResult = await SaveFileAsync(request.File, cancellationToken);
+            uploadedPublicId = uploadResult.PublicId;
+            return Ok(uploadResult.Response);
         }
         catch (ApiException exception)
         {
-            if (savedFileUrl is not null)
+            if (uploadedPublicId is not null)
             {
-                DeleteFile(savedFileUrl);
+                await DeleteFileAsync(uploadedPublicId);
             }
 
             return ApiError(exception);
         }
         catch
         {
-            if (savedFileUrl is not null)
+            if (uploadedPublicId is not null)
             {
-                DeleteFile(savedFileUrl);
+                await DeleteFileAsync(uploadedPublicId);
             }
 
             throw;
         }
     }
 
-    private async Task<PrescriptionImageUploadResponse> SaveFileAsync(IFormFile file, CancellationToken cancellationToken)
+    private async Task<UploadedPrescriptionImage> SaveFileAsync(IFormFile file, CancellationToken cancellationToken)
     {
-        var uploadsDirectory = GetPrescriptionUploadsDirectory();
-        Directory.CreateDirectory(uploadsDirectory);
-
         var extension = ResolveFileExtension(file);
         var fileName = $"prescription-{Guid.NewGuid():N}{extension}";
-        var physicalPath = Path.Combine(uploadsDirectory, fileName);
 
-        await using var stream = new FileStream(physicalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        await file.CopyToAsync(stream, cancellationToken);
+        await using var stream = file.OpenReadStream();
+        var uploadedImage = await _imageStorageService.UploadImageAsync(
+            stream,
+            fileName,
+            "prescriptions",
+            cancellationToken);
 
-        return new PrescriptionImageUploadResponse
-        {
-            FileName = fileName,
-            FileUrl = $"/uploads/prescriptions/{fileName}"
-        };
+        return new UploadedPrescriptionImage(
+            new PrescriptionImageUploadResponse
+            {
+                FileName = fileName,
+                FileUrl = uploadedImage.Url
+            },
+            uploadedImage.PublicId);
     }
 
-    private void DeleteFile(string fileUrl)
+    private Task DeleteFileAsync(string publicId)
     {
-        var physicalPath = Path.Combine(GetUploadsRootPath(), fileUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-
-        if (System.IO.File.Exists(physicalPath))
-        {
-            System.IO.File.Delete(physicalPath);
-        }
-    }
-
-    private string GetPrescriptionUploadsDirectory()
-    {
-        return Path.Combine(GetUploadsRootPath(), "uploads", "prescriptions");
-    }
-
-    private string GetUploadsRootPath()
-    {
-        return _environment.WebRootPath ?? Path.Combine(_environment.ContentRootPath, "wwwroot");
+        return _imageStorageService.DeleteByPublicIdAsync(publicId, CancellationToken.None);
     }
 
     private static string ResolveFileExtension(IFormFile file)
@@ -133,4 +120,6 @@ public class PrescriptionImagesController(IWebHostEnvironment environment) : Api
             details = new { field, issue }
         };
     }
+
+    private sealed record UploadedPrescriptionImage(PrescriptionImageUploadResponse Response, string PublicId);
 }
