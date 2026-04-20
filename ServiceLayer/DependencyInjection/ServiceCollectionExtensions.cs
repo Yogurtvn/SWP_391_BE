@@ -1,11 +1,11 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RepositoryLayer.DependencyInjection;
+using ServiceLayer.Configuration;
 using ServiceLayer.Contracts.Auth;
 using ServiceLayer.Contracts.Cart;
 using ServiceLayer.Contracts.CatalogSupport;
 using ServiceLayer.Contracts.Category;
-using ServiceLayer.Contracts.UserManagement;
 using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.LensType;
 using ServiceLayer.Contracts.Orders;
@@ -19,13 +19,14 @@ using ServiceLayer.Contracts.Report;
 using ServiceLayer.Contracts.Security;
 using ServiceLayer.Contracts.Shipping;
 using ServiceLayer.Contracts.StockReceipt;
+using ServiceLayer.Contracts.Storage;
+using ServiceLayer.Contracts.UserManagement;
 using ServiceLayer.DTOs.Shipping;
 using ServiceLayer.Security;
 using ServiceLayer.Services.Auth;
 using ServiceLayer.Services.CartManagement;
 using ServiceLayer.Services.CatalogSupport;
 using ServiceLayer.Services.CategoryManagement;
-using ServiceLayer.Services.UserManagement;
 using ServiceLayer.Services.InventoryManagement;
 using ServiceLayer.Services.LensTypeManagement;
 using ServiceLayer.Services.Orders;
@@ -38,6 +39,8 @@ using ServiceLayer.Services.ProductVariantManagement;
 using ServiceLayer.Services.ReportManagement;
 using ServiceLayer.Services.Shipping;
 using ServiceLayer.Services.StockReceiptManagement;
+using ServiceLayer.Services.Storage;
+using ServiceLayer.Services.UserManagement;
 
 namespace ServiceLayer.DependencyInjection;
 
@@ -61,27 +64,59 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IProductService, ProductService>();
         services.AddScoped<IProductVariantService, ProductVariantService>();
         services.AddScoped<IProductImageService, ProductImageService>();
-        services.AddScoped<IInventoryService, InventoryService>(); // Đăng ký InventoryService vào DI container
-        services.AddScoped<IStockReceiptService, StockReceiptService>(); // Đăng ký StockReceiptService vào DI container
-        services.AddScoped<IReportService, ReportService>(); // Đăng ký ReportService vào DI container
-        services.AddScoped<IUserService, UserService>(); // Đăng ký UserService vào DI container
-        services.AddScoped<ICategoryService, CategoryService>(); // Đăng ký CategoryService vào DI container
+        services.AddScoped<IInventoryService, InventoryService>();
+        services.AddScoped<IStockReceiptService, StockReceiptService>();
+        services.AddScoped<IReportService, ReportService>();
+        services.AddScoped<IUserService, UserService>();
+        services.AddScoped<ICategoryService, CategoryService>();
 
-        // GHN Shipping Integration
+        services.Configure<CloudinaryOptions>(configuration.GetSection(CloudinaryOptions.SectionName));
+        services.PostConfigure<CloudinaryOptions>(options =>
+        {
+            options.CloudName = ResolveConfigOverride(
+                options.CloudName,
+                "Cloudinary__CloudName",
+                "CLOUDINARY_CLOUD_NAME");
+            options.ApiKey = ResolveConfigOverride(
+                options.ApiKey,
+                "Cloudinary__ApiKey",
+                "CLOUDINARY_API_KEY");
+            options.ApiSecret = ResolveConfigOverride(
+                options.ApiSecret,
+                "Cloudinary__ApiSecret",
+                "CLOUDINARY_API_SECRET");
+        });
+        services.AddSingleton<IImageStorageService, CloudinaryImageStorageService>();
+
         services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
-        services.AddHttpClient("GHN", (sp, client) =>
+        services.AddHttpClient("GHN", (_, client) =>
         {
             var settings = configuration.GetSection(GhnSettings.SectionName).Get<GhnSettings>();
-            if (settings != null)
+            if (settings is null)
             {
-                client.BaseAddress = new Uri(settings.BaseUrl);
-                client.DefaultRequestHeaders.Add("Token", settings.Token);
-                // Một số API GHN yêu cầu ShopId trong header (tùy phiên bản)
-                client.DefaultRequestHeaders.Add("ShopId", settings.ShopId.ToString());
+                return;
             }
+
+            client.BaseAddress = new Uri(settings.BaseUrl);
+            client.DefaultRequestHeaders.Add("Token", settings.Token);
+            client.DefaultRequestHeaders.Add("ShopId", settings.ShopId.ToString());
         });
         services.AddScoped<IShippingService, GhnShippingService>();
 
         return services;
+    }
+
+    private static string ResolveConfigOverride(string currentValue, params string[] environmentVariableNames)
+    {
+        foreach (var environmentVariableName in environmentVariableNames)
+        {
+            var overrideValue = Environment.GetEnvironmentVariable(environmentVariableName);
+            if (!string.IsNullOrWhiteSpace(overrideValue))
+            {
+                return overrideValue.Trim();
+            }
+        }
+
+        return currentValue;
     }
 }
