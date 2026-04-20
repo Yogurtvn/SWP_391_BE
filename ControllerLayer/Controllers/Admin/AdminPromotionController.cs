@@ -2,14 +2,16 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RepositoryLayer.Common;
 using ServiceLayer.Contracts.Catalog;
+using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.Promotions;
+using ServiceLayer.Exceptions;
 
-namespace ControllerLayer.Controllers.Admin;
+namespace ControllerLayer.Controllers;
 
 [ApiController]
 [Route("api/admin/promotions")]
 [Authorize(Roles = "Admin")]
-public class AdminPromotionController(IPromotionService promotionService) : ControllerBase
+public class AdminPromotionController(IPromotionService promotionService) : ApiControllerBase
 {
     private readonly IPromotionService _promotionService = promotionService;
 
@@ -18,8 +20,15 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         [FromQuery] PaginationRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _promotionService.GetPromotionsAsync(request, cancellationToken);
-        return Ok(result);
+        try
+        {
+            var result = await _promotionService.GetPromotionsAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 
     [HttpGet("{id:int}")]
@@ -27,8 +36,15 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         int id,
         CancellationToken cancellationToken)
     {
-        var result = await _promotionService.GetPromotionByIdAsync(id, cancellationToken);
-        return Ok(result);
+        try
+        {
+            var result = await _promotionService.GetPromotionByIdAsync(id, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 
     [HttpPost]
@@ -36,8 +52,15 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         [FromBody] CreatePromotionRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _promotionService.CreatePromotionAsync(request, cancellationToken);
-        return CreatedAtAction(nameof(GetPromotionById), new { id = result.PromotionId }, result);
+        try
+        {
+            var result = await _promotionService.CreatePromotionAsync(request, cancellationToken);
+            return CreatedAtAction(nameof(GetPromotionById), new { id = result.PromotionId }, result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 
     [HttpPatch("{id:int}")]
@@ -46,8 +69,32 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         [FromBody] UpdatePromotionRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _promotionService.UpdatePromotionAsync(id, request, cancellationToken);
-        return Ok(result);
+        try
+        {
+            var result = await _promotionService.UpdatePromotionAsync(id, request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
+    }
+
+    [HttpPatch("{id:int}/status")]
+    public async Task<ActionResult<MessageResponse>> UpdatePromotionStatus(
+        int id,
+        [FromBody] UpdatePromotionStatusRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _promotionService.UpdatePromotionStatusAsync(id, request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 
     [HttpDelete("{id:int}")]
@@ -55,8 +102,32 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         int id,
         CancellationToken cancellationToken)
     {
-        await _promotionService.DeletePromotionAsync(id, cancellationToken);
-        return NoContent();
+        try
+        {
+            await _promotionService.DeletePromotionAsync(id, cancellationToken);
+            return NoContent();
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
+    }
+
+    [HttpPost("{promotionId:int}/variants")]
+    public async Task<ActionResult<MessageResponse>> AssignPromotionToVariants(
+        int promotionId,
+        [FromBody] AssignPromotionVariantsRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _promotionService.AssignPromotionToVariantsAsync(promotionId, request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 
     [HttpPost("{promotionId:int}/variants/{variantId:int}")]
@@ -65,8 +136,15 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         int variantId,
         CancellationToken cancellationToken)
     {
-        await _promotionService.AssignPromotionToVariantAsync(promotionId, variantId, cancellationToken);
-        return NoContent();
+        try
+        {
+            await _promotionService.AssignPromotionToVariantAsync(promotionId, variantId, cancellationToken);
+            return NoContent();
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 
     [HttpDelete("variants/{variantId:int}")]
@@ -74,7 +152,14 @@ public class AdminPromotionController(IPromotionService promotionService) : Cont
         int variantId,
         CancellationToken cancellationToken)
     {
-        await _promotionService.RemovePromotionFromVariantAsync(variantId, cancellationToken);
-        return NoContent();
+        try
+        {
+            await _promotionService.RemovePromotionFromVariantAsync(variantId, cancellationToken);
+            return NoContent();
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
     }
 }

@@ -6,6 +6,7 @@ using ServiceLayer.DTOs.Cart.Request;
 using ServiceLayer.DTOs.Cart.Response;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
 using System.Net;
 
 namespace ServiceLayer.Services.CartManagement;
@@ -116,11 +117,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
-            var isPromotionActive = variant.Promotion is { IsActive: true } && variant.Promotion.StartAt <= now && variant.Promotion.EndAt >= now;
-            var discountPercent = isPromotionActive ? variant.Promotion!.DiscountPercent : 0m;
-            var originalUnitPrice = variant.Price;
-            var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
-            var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+            var pricing = PromotionPricingHelper.Calculate(variant, now);
 
             var cart = await GetOrCreateCartAsync(userId, now, cancellationToken);
             var cartItem = new CartItem
@@ -131,12 +128,12 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 OrderType = orderType,
                 Quantity = quantity,
                 SelectedColor = NormalizeText(variant.Color),
-                OriginalUnitPrice = originalUnitPrice,
-                DiscountPercent = discountPercent,
-                DiscountAmount = discountAmount,
-                FinalUnitPrice = finalUnitPrice,
-                UnitPrice = finalUnitPrice,
-                TotalPrice = finalUnitPrice * quantity,
+                OriginalUnitPrice = pricing.OriginalPrice,
+                DiscountPercent = pricing.DiscountPercent,
+                DiscountAmount = pricing.DiscountAmount,
+                FinalUnitPrice = pricing.FinalPrice,
+                UnitPrice = pricing.FinalPrice,
+                TotalPrice = pricing.FinalPrice * quantity,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -182,7 +179,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             cartItemId,
             CartItemType.Standard,
             tracked: true,
-            includeProperties: "Cart,Variant.Product,Variant.Inventory");
+            includeProperties: "Cart,Variant.Product,Variant.Inventory,Variant.Promotion");
 
         if (cartItem is null)
         {
@@ -197,19 +194,15 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity);
 
         var now = DateTime.UtcNow;
-        var isPromotionActive = cartItem.Variant.Promotion is { IsActive: true } && cartItem.Variant.Promotion.StartAt <= now && cartItem.Variant.Promotion.EndAt >= now;
-        var discountPercent = isPromotionActive ? cartItem.Variant.Promotion!.DiscountPercent : 0m;
-        var originalUnitPrice = cartItem.Variant.Price;
-        var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
-        var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+        var pricing = PromotionPricingHelper.Calculate(cartItem.Variant, now);
 
         cartItem.Quantity = quantity;
-        cartItem.OriginalUnitPrice = originalUnitPrice;
-        cartItem.DiscountPercent = discountPercent;
-        cartItem.DiscountAmount = discountAmount;
-        cartItem.FinalUnitPrice = finalUnitPrice;
-        cartItem.UnitPrice = finalUnitPrice;
-        cartItem.TotalPrice = finalUnitPrice * quantity;
+        cartItem.OriginalUnitPrice = pricing.OriginalPrice;
+        cartItem.DiscountPercent = pricing.DiscountPercent;
+        cartItem.DiscountAmount = pricing.DiscountAmount;
+        cartItem.FinalUnitPrice = pricing.FinalPrice;
+        cartItem.UnitPrice = pricing.FinalPrice;
+        cartItem.TotalPrice = pricing.FinalPrice * quantity;
         cartItem.UpdatedAt = now;
         cartItem.Cart.UpdatedAt = cartItem.UpdatedAt;
 
@@ -274,13 +267,9 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         }
 
         var now = DateTime.UtcNow;
-        var isPromotionActive = variant.Promotion is { IsActive: true } && variant.Promotion.StartAt <= now && variant.Promotion.EndAt >= now;
-        var discountPercent = isPromotionActive ? variant.Promotion!.DiscountPercent : 0m;
-        var originalUnitPrice = variant.Price;
-        var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
-        var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+        var pricing = PromotionPricingHelper.Calculate(variant, now);
 
-        var pricing = CalculatePrescriptionPricing(finalUnitPrice, lensType.Price, preparedRequest.Quantity);
+        var prescriptionPricing = CalculatePrescriptionPricing(pricing.FinalPrice, lensType.Price, preparedRequest.Quantity);
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
         var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
 
@@ -297,12 +286,12 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 OrderType = OrderType.Prescription,
                 Quantity = preparedRequest.Quantity,
                 SelectedColor = NormalizeText(variant.Color),
-                OriginalUnitPrice = originalUnitPrice,
-                DiscountPercent = discountPercent,
-                DiscountAmount = discountAmount,
-                FinalUnitPrice = finalUnitPrice,
-                UnitPrice = finalUnitPrice,
-                TotalPrice = pricing.TotalPrice,
+                OriginalUnitPrice = pricing.OriginalPrice,
+                DiscountPercent = pricing.DiscountPercent,
+                DiscountAmount = pricing.DiscountAmount,
+                FinalUnitPrice = pricing.FinalPrice,
+                UnitPrice = pricing.FinalPrice,
+                TotalPrice = prescriptionPricing.TotalPrice,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -311,7 +300,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             await cartItemRepository.AddAsync(cartItem);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            var prescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, pricing, now);
+            var prescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, prescriptionPricing, now);
             await detailRepository.AddAsync(prescriptionDetail);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
@@ -322,7 +311,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 ItemType = ToApiCartItemType(cartItem.ItemType),
                 OrderType = ToApiOrderType(cartItem.OrderType),
                 FramePrice = cartItem.UnitPrice,
-                LensPrice = pricing.LensPricePerUnit,
+                LensPrice = prescriptionPricing.LensPricePerUnit,
                 TotalPrice = cartItem.TotalPrice
             };
         }
@@ -373,36 +362,32 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         }
 
         var now = DateTime.UtcNow;
-        var isPromotionActive = variant.Promotion is { IsActive: true } && variant.Promotion.StartAt <= now && variant.Promotion.EndAt >= now;
-        var discountPercent = isPromotionActive ? variant.Promotion!.DiscountPercent : 0m;
-        var originalUnitPrice = variant.Price;
-        var discountAmount = Math.Round(originalUnitPrice * discountPercent / 100m, 2);
-        var finalUnitPrice = Math.Max(0m, originalUnitPrice - discountAmount);
+        var pricing = PromotionPricingHelper.Calculate(variant, now);
 
-        var pricing = CalculatePrescriptionPricing(finalUnitPrice, lensType.Price, preparedRequest.Quantity);
+        var prescriptionPricing = CalculatePrescriptionPricing(pricing.FinalPrice, lensType.Price, preparedRequest.Quantity);
         var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
 
         cartItem.VariantId = variant.VariantId;
         cartItem.Quantity = preparedRequest.Quantity;
         cartItem.SelectedColor = NormalizeText(variant.Color);
         cartItem.OrderType = OrderType.Prescription;
-        cartItem.OriginalUnitPrice = originalUnitPrice;
-        cartItem.DiscountPercent = discountPercent;
-        cartItem.DiscountAmount = discountAmount;
-        cartItem.FinalUnitPrice = finalUnitPrice;
-        cartItem.UnitPrice = finalUnitPrice;
-        cartItem.TotalPrice = pricing.TotalPrice;
+        cartItem.OriginalUnitPrice = pricing.OriginalPrice;
+        cartItem.DiscountPercent = pricing.DiscountPercent;
+        cartItem.DiscountAmount = pricing.DiscountAmount;
+        cartItem.FinalUnitPrice = pricing.FinalPrice;
+        cartItem.UnitPrice = pricing.FinalPrice;
+        cartItem.TotalPrice = prescriptionPricing.TotalPrice;
         cartItem.UpdatedAt = now;
         cartItem.Cart.UpdatedAt = now;
 
         if (cartItem.CartPrescriptionDetail is null)
         {
-            cartItem.CartPrescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, pricing, now);
+            cartItem.CartPrescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, prescriptionPricing, now);
             await detailRepository.AddAsync(cartItem.CartPrescriptionDetail);
         }
         else
         {
-            ApplyPrescriptionDetail(cartItem.CartPrescriptionDetail, lensType, preparedRequest, pricing);
+            ApplyPrescriptionDetail(cartItem.CartPrescriptionDetail, lensType, preparedRequest, prescriptionPricing);
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
