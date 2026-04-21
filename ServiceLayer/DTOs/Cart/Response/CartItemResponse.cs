@@ -12,6 +12,8 @@ public class CartItemResponse
 
     public int Quantity { get; set; }
 
+    public string? SelectedColor { get; set; }
+
     public decimal UnitPrice { get; set; }
 
     public decimal OriginalUnitPrice { get; set; }

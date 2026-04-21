@@ -2,16 +2,21 @@ using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.CatalogSupport;
+using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.CatalogSupport.Request;
 using ServiceLayer.DTOs.CatalogSupport.Response;
 using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
 using System.Net;
 
 namespace ServiceLayer.Services.CatalogSupport;
 
-public class CatalogSupportService(IUnitOfWork unitOfWork) : ICatalogSupportService
+public class CatalogSupportService(
+    IUnitOfWork unitOfWork,
+    IPrescriptionPricingService prescriptionPricingService) : ICatalogSupportService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
 
     public async Task<PrescriptionEligibilityResponse?> GetPrescriptionEligibilityAsync(
         int productId,
@@ -104,7 +109,7 @@ public class CatalogSupportService(IUnitOfWork unitOfWork) : ICatalogSupportServ
                 && item.Product.IsActive
                 && item.Product.ProductType == ProductType.Frame
                 && item.Product.PrescriptionCompatible,
-            includeProperties: "Product",
+            includeProperties: "Product,Promotion",
             tracked: false);
 
         if (variant is null)
@@ -121,17 +126,25 @@ public class CatalogSupportService(IUnitOfWork unitOfWork) : ICatalogSupportServ
             throw CreatePricingException("lensTypeId", "lensTypeId must reference an existing active lens type");
         }
 
-        // TODO: plug in coating pricing source once API_SPEC.md defines it. Coating price is kept at 0 for now.
-        var coatingPrice = 0m;
-        var framePrice = variant.Price;
-        var lensPrice = lensType.Price;
+        var pricing = PromotionPricingHelper.Calculate(variant, DateTime.UtcNow);
+        var calculation = _prescriptionPricingService.Calculate(
+            pricing.FinalPrice,
+            lensType.Price,
+            request.LensMaterial,
+            request.Coatings,
+            quantity,
+            errorCode: "PRICING_CALCULATION_FAILED",
+            errorMessage: "Unable to calculate prescription pricing");
 
         return new PrescriptionPricingResponse
         {
-            FramePrice = framePrice,
-            LensPrice = lensPrice,
-            CoatingPrice = coatingPrice,
-            TotalPrice = (framePrice + lensPrice + coatingPrice) * quantity
+            FramePrice = calculation.FramePrice,
+            LensBasePrice = calculation.LensBasePrice,
+            MaterialPrice = calculation.MaterialPrice,
+            CoatingPrice = calculation.CoatingPrice,
+            LensPrice = calculation.LensPrice,
+            Quantity = quantity,
+            TotalPrice = calculation.TotalPrice
         };
     }
 

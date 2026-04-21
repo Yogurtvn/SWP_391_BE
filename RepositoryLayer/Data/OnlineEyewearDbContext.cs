@@ -150,6 +150,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.LensMaterial).HasMaxLength(50);
             entity.Property(x => x.Coatings).HasMaxLength(500);
             entity.Property(x => x.LensBasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.MaterialPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.CoatingPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.TotalLensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.SphLeft).HasColumnName("SPH_Left").HasPrecision(5, 2);
@@ -190,6 +191,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.LensMaterial).HasMaxLength(50);
             entity.Property(x => x.Coatings).HasMaxLength(500);
             entity.Property(x => x.LensBasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.MaterialPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.CoatingPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.TotalLensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.SphLeft).HasColumnName("SPH_Left").HasPrecision(5, 2);

@@ -6,6 +6,7 @@ using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Payment;
+using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.Orders;
 using ServiceLayer.DTOs.Payment.Response;
@@ -18,7 +19,8 @@ namespace ServiceLayer.Services.Orders;
 public class OrderService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IPaymentService paymentService) : IOrderService
+    IPaymentService paymentService,
+    IPrescriptionPricingService prescriptionPricingService) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses =
     [
@@ -63,6 +65,7 @@ public class OrderService(
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPaymentService _paymentService = paymentService;
+    private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
 
     public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
@@ -440,7 +443,8 @@ public class OrderService(
                     FinalUnitPrice = item.FinalUnitPrice,
                     PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
-                    LensPrice = item.LensPrice
+                    LensPrice = item.LensPrice,
+                    PrescriptionId = item.PrescriptionId
                 })
                 .ToList()
         };
@@ -482,7 +486,8 @@ public class OrderService(
             FinalUnitPrice = orderItem.FinalUnitPrice,
             PromotionNameSnapshot = orderItem.PromotionNameSnapshot,
             LensTypeId = orderItem.LensTypeId,
-            LensPrice = orderItem.LensPrice
+            LensPrice = orderItem.LensPrice,
+            PrescriptionId = orderItem.PrescriptionId
         };
     }
 
@@ -777,7 +782,7 @@ public class OrderService(
         return new CreateOrderResult(order, payment, paymentAction);
     }
 
-    private static IReadOnlyList<OrderCreationItem> BuildCheckoutOrderItems(
+    private IReadOnlyList<OrderCreationItem> BuildCheckoutOrderItems(
         int userId,
         IReadOnlyCollection<CartItem> cartItems,
         OrderType orderType,
@@ -796,6 +801,16 @@ public class OrderService(
 
                 if (orderType == OrderType.Prescription)
                 {
+                    if (item.ItemType != CartItemType.PrescriptionConfigured)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+
+                    if (item.Quantity != 1)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+
                     var detail = item.CartPrescriptionDetail;
 
                     if (detail is null || detail.LensType is null || !detail.LensType.IsActive)
@@ -808,6 +823,17 @@ public class OrderService(
                         throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
                     }
 
+                    ValidatePrescriptionDetail(detail);
+                    var calculatedPricing = _prescriptionPricingService.Calculate(
+                        pricing.FinalPrice,
+                        detail.LensType.Price,
+                        detail.LensMaterial,
+                        DeserializeCoatings(detail.Coatings),
+                        item.Quantity,
+                        errorCode: "CHECKOUT_FAILED",
+                        errorMessage: "Unable to checkout selected items");
+                    var serializedCoatings = SerializeCoatings(calculatedPricing.Coatings);
+
                     return new OrderCreationItem
                     {
                         Variant = item.Variant,
@@ -819,20 +845,21 @@ public class OrderService(
                         FinalUnitPrice = pricing.FinalPrice,
                         UnitPrice = pricing.FinalPrice,
                         PromotionNameSnapshot = pricing.PromotionName,
-                        LineTotal = (pricing.FinalPrice + detail.TotalLensPrice) * item.Quantity,
+                        LineTotal = calculatedPricing.TotalPrice,
                         ReserveInventory = true,
                         LensTypeId = detail.LensTypeId,
-                        LensPrice = detail.TotalLensPrice,
+                        LensPrice = calculatedPricing.LensPrice,
                         Prescription = new PrescriptionSpec
                         {
                             UserId = userId,
                             LensTypeId = detail.LensTypeId,
-                            LensTypeCode = detail.LensTypeCode,
-                            LensMaterial = detail.LensMaterial,
-                            Coatings = detail.Coatings,
-                            LensBasePrice = detail.LensBasePrice,
-                            CoatingPrice = detail.CoatingPrice,
-                            TotalLensPrice = detail.TotalLensPrice,
+                            LensTypeCode = detail.LensType.LensCode,
+                            LensMaterial = calculatedPricing.LensMaterial,
+                            Coatings = serializedCoatings,
+                            LensBasePrice = calculatedPricing.LensBasePrice,
+                            MaterialPrice = calculatedPricing.MaterialPrice,
+                            CoatingPrice = calculatedPricing.CoatingPrice,
+                            TotalLensPrice = calculatedPricing.LensPrice,
                             SphLeft = detail.SphLeft,
                             SphRight = detail.SphRight,
                             CylLeft = detail.CylLeft,
@@ -840,12 +867,17 @@ public class OrderService(
                             AxisLeft = detail.AxisLeft,
                             AxisRight = detail.AxisRight,
                             Pd = detail.Pd,
-                            PrescriptionImage = detail.PrescriptionImage,
+                            PrescriptionImage = NormalizePrescriptionImageReference(detail.PrescriptionImage),
                             PrescriptionStatus = PrescriptionStatus.Submitted,
-                            Notes = detail.Notes,
+                            Notes = NormalizeOptionalNote(detail.Notes),
                             CreatedAt = now
                         }
                     };
+                }
+
+                if (item.ItemType != CartItemType.Standard)
+                {
+                    throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
                 }
 
                 return new OrderCreationItem
@@ -865,6 +897,86 @@ public class OrderService(
                 };
             })
             .ToList();
+    }
+
+    private static void ValidatePrescriptionDetail(CartPrescriptionDetail detail)
+    {
+        ValidateAxis(detail.AxisLeft);
+        ValidateAxis(detail.AxisRight);
+
+        if (detail.Pd <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+    }
+
+    private static void ValidateAxis(int axis)
+    {
+        if (axis is < 0 or > 180)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+    }
+
+    private static IReadOnlyList<string> DeserializeCoatings(string? serializedCoatings)
+    {
+        if (string.IsNullOrWhiteSpace(serializedCoatings))
+        {
+            return [];
+        }
+
+        return serializedCoatings
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
+    {
+        if (coatings is null || coatings.Count == 0)
+        {
+            return null;
+        }
+
+        var serialized = string.Join(",", coatings);
+
+        if (serialized.Length > 500)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return serialized;
+    }
+
+    private static string? NormalizePrescriptionImageReference(string? imageReference)
+    {
+        var normalized = NormalizeText(imageReference);
+
+        if (normalized is not null
+            && normalized.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        if (normalized is not null && normalized.Length > 500)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeOptionalNote(string? note)
+    {
+        var normalized = NormalizeText(note);
+
+        if (normalized is not null && normalized.Length > 255)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return normalized;
     }
 
     private static IReadOnlyList<int> PrepareCartItemIds(IReadOnlyCollection<int>? cartItemIds)
@@ -1257,7 +1369,10 @@ public class OrderService(
                     FinalUnitPrice = item.FinalUnitPrice,
                     UnitPrice = item.UnitPrice,
                     PromotionNameSnapshot = item.PromotionNameSnapshot,
-                    LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity
+                    LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity,
+                    LensTypeId = item.LensTypeId,
+                    LensPrice = item.LensPrice,
+                    PrescriptionId = item.PrescriptionId
                 })
                 .ToList(),
             Payment = latestPayment is null

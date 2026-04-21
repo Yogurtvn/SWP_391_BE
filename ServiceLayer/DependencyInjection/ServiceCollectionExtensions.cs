@@ -59,6 +59,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPaymentService, PaymentService>();
         services.AddScoped<IPayOsGatewayClient, PayOsGatewayClient>();
         services.AddScoped<IPrescriptionService, PrescriptionService>();
+        services.AddScoped<IPrescriptionPricingService, PrescriptionPricingService>();
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IPasswordHasher, PasswordHasher>();
         services.AddScoped<ILensTypeService, LensTypeService>();
@@ -74,6 +75,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICategoryService, CategoryService>();
 
         services.Configure<CloudinaryOptions>(configuration.GetSection(CloudinaryOptions.SectionName));
+        services.Configure<PrescriptionPricingOptions>(configuration.GetSection(PrescriptionPricingOptions.SectionName));
         services.PostConfigure<CloudinaryOptions>(options =>
         {
             options.CloudName = ResolveConfigOverride(

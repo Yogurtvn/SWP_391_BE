@@ -16,6 +16,8 @@ public class CartPrescriptionDetail
 
     public decimal LensBasePrice { get; set; }
 
+    public decimal MaterialPrice { get; set; }
+
     public decimal CoatingPrice { get; set; }
 
     public decimal TotalLensPrice { get; set; }

@@ -28,6 +28,8 @@ public class OrderItemListItemResponse
     public int? LensTypeId { get; set; }
 
     public decimal? LensPrice { get; set; }
+
+    public int? PrescriptionId { get; set; }
 }
 
 public class OrderItemDetailResponse
@@ -55,4 +57,6 @@ public class OrderItemDetailResponse
     public int? LensTypeId { get; set; }
 
     public decimal? LensPrice { get; set; }
+
+    public int? PrescriptionId { get; set; }
 }
