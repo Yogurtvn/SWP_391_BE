@@ -290,6 +290,7 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             ProductType = ToApiEnum(product.ProductType),
             BasePrice = ResolveDisplayPrice(product, includeInactive),
             ThumbnailUrl = primaryImage?.ImageUrl,
+            IsActive = product.IsActive,
             IsAvailable = visibleVariants.Any(variant => (variant.Inventory?.Quantity ?? 0) > 0),
             IsPreOrderAllowed = visibleVariants.Any(variant => variant.Inventory?.IsPreOrderAllowed == true)
         };
@@ -314,9 +315,11 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         {
             ProductId = product.ProductId,
             ProductName = product.ProductName,
+            CategoryId = product.CategoryId,
             ProductType = ToApiEnum(product.ProductType),
             Description = product.Description,
             BasePrice = product.BasePrice,
+            IsActive = product.IsActive,
             PrescriptionCompatible = product.PrescriptionCompatible,
             Variants = variants,
             Images = images

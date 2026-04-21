@@ -77,6 +77,7 @@ public class OrderService(
         var receiverName = NormalizeRequiredText(request.ReceiverName, "receiverName");
         var receiverPhone = NormalizeRequiredText(request.ReceiverPhone, "receiverPhone");
         var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "shippingAddress");
+        var shippingFee = NormalizeMoney(request.ShippingFee, "shippingFee");
         var paymentMethod = ParsePaymentMethod(request.PaymentMethod);
         var cartItemIds = PrepareCartItemIds(request.CartItemIds);
         var now = DateTime.UtcNow;
@@ -110,6 +111,7 @@ public class OrderService(
             shippingAddress,
             paymentMethod,
             orderItems,
+            shippingFee,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cartItemsToRemove: cartItems,
@@ -190,6 +192,7 @@ public class OrderService(
                     ReserveInventory = true
                 }
             ],
+            shippingFee: 0m,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cancellationToken: cancellationToken);
@@ -417,6 +420,7 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
@@ -441,7 +445,8 @@ public class OrderService(
                     PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice,
-                    PrescriptionId = item.PrescriptionId
+                    PrescriptionId = item.PrescriptionId,
+                    Prescription = MapOrderItemPrescription(item.Prescription)
                 })
                 .ToList()
         };
@@ -456,6 +461,7 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
@@ -484,7 +490,8 @@ public class OrderService(
             PromotionNameSnapshot = orderItem.PromotionNameSnapshot,
             LensTypeId = orderItem.LensTypeId,
             LensPrice = orderItem.LensPrice,
-            PrescriptionId = orderItem.PrescriptionId
+            PrescriptionId = orderItem.PrescriptionId,
+            Prescription = MapOrderItemPrescription(orderItem.Prescription)
         };
     }
 
@@ -636,6 +643,7 @@ public class OrderService(
         string shippingAddress,
         PaymentMethod paymentMethod,
         IReadOnlyList<OrderCreationItem> items,
+        decimal shippingFee,
         int createdByUserId,
         bool requestPayOsInitialization,
         IReadOnlyCollection<CartItem>? cartItemsToRemove = null,
@@ -733,6 +741,7 @@ public class OrderService(
                 });
             }
 
+            order.TotalAmount += shippingFee;
             payment.Amount = order.TotalAmount;
             order.Payments.Add(payment);
 
@@ -1277,6 +1286,16 @@ public class OrderService(
         return string.IsNullOrWhiteSpace(normalizedValue) ? null : normalizedValue;
     }
 
+    private static decimal NormalizeMoney(decimal value, string field)
+    {
+        if (value < 0m)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", $"{field} cannot be negative");
+        }
+
+        return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+    }
+
     private static string? NormalizeSortField(string? value)
     {
         return string.IsNullOrWhiteSpace(value)
@@ -1365,7 +1384,8 @@ public class OrderService(
                     LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice,
-                    PrescriptionId = item.PrescriptionId
+                    PrescriptionId = item.PrescriptionId,
+                    Prescription = MapOrderItemPrescription(item.Prescription)
                 })
                 .ToList(),
             Payment = latestPayment is null
@@ -1404,6 +1424,43 @@ public class OrderService(
                 })
                 .ToList()
         };
+    }
+
+    private static OrderItemPrescriptionResponse? MapOrderItemPrescription(PrescriptionSpec? prescription)
+    {
+        return prescription is null
+            ? null
+            : new OrderItemPrescriptionResponse
+            {
+                PrescriptionId = prescription.PrescriptionId,
+                LensTypeId = prescription.LensTypeId,
+                LensTypeCode = prescription.LensTypeCode,
+                LensMaterial = prescription.LensMaterial,
+                Coatings = DeserializeCoatings(prescription.Coatings).ToList(),
+                LensBasePrice = prescription.LensBasePrice,
+                MaterialPrice = prescription.MaterialPrice,
+                CoatingPrice = prescription.CoatingPrice,
+                TotalLensPrice = prescription.TotalLensPrice,
+                RightEye = new OrderPrescriptionEyeResponse
+                {
+                    Sph = prescription.SphRight,
+                    Cyl = prescription.CylRight,
+                    Axis = prescription.AxisRight
+                },
+                LeftEye = new OrderPrescriptionEyeResponse
+                {
+                    Sph = prescription.SphLeft,
+                    Cyl = prescription.CylLeft,
+                    Axis = prescription.AxisLeft
+                },
+                Pd = prescription.Pd,
+                PrescriptionImageUrl = prescription.PrescriptionImage,
+                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
+                StaffId = prescription.StaffId,
+                VerifiedAt = prescription.VerifiedAt,
+                Notes = prescription.Notes,
+                CreatedAt = prescription.CreatedAt
+            };
     }
 
     private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)

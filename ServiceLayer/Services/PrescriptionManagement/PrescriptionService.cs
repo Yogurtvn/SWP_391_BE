@@ -68,6 +68,7 @@ public class PrescriptionService(
         var query = _dbContext.PrescriptionSpecs
             .AsNoTracking()
             .Include(prescription => prescription.OrderItems)
+            .Include(prescription => prescription.User)
             .AsSplitQuery()
             .AsQueryable();
 
@@ -113,11 +114,21 @@ public class PrescriptionService(
             .Select(prescription => new PrescriptionListItemResponse
             {
                 PrescriptionId = prescription.PrescriptionId,
+                UserId = prescription.UserId,
+                CustomerName = prescription.User.FullName,
+                CustomerEmail = prescription.User.Email,
                 OrderId = prescription.OrderItems
                     .OrderBy(item => item.OrderItemId)
                     .Select(item => (int?)item.OrderId)
                     .FirstOrDefault(),
-                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus)
+                LensTypeId = prescription.LensTypeId,
+                LensTypeCode = prescription.LensTypeCode,
+                LensMaterial = prescription.LensMaterial,
+                TotalLensPrice = prescription.TotalLensPrice,
+                PrescriptionImageUrl = prescription.PrescriptionImage,
+                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
+                Notes = prescription.Notes,
+                CreatedAt = prescription.CreatedAt
             })
             .ToListAsync(cancellationToken);
 
@@ -132,6 +143,7 @@ public class PrescriptionService(
             .AsNoTracking()
             .Include(current => current.OrderItems)
             .Include(current => current.LensType)
+            .Include(current => current.User)
             .FirstOrDefaultAsync(current => current.PrescriptionId == prescriptionId, cancellationToken);
 
         return prescription is null
@@ -140,6 +152,8 @@ public class PrescriptionService(
             {
                 PrescriptionId = prescription.PrescriptionId,
                 UserId = prescription.UserId,
+                CustomerName = prescription.User.FullName,
+                CustomerEmail = prescription.User.Email,
                 OrderId = prescription.OrderItems
                     .OrderBy(item => item.OrderItemId)
                     .Select(item => (int?)item.OrderId)

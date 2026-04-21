@@ -1,6 +1,8 @@
+using Microsoft.Extensions.Options;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Configuration;
 using ServiceLayer.Contracts.CatalogSupport;
 using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.CatalogSupport.Request;
@@ -13,10 +15,12 @@ namespace ServiceLayer.Services.CatalogSupport;
 
 public class CatalogSupportService(
     IUnitOfWork unitOfWork,
-    IPrescriptionPricingService prescriptionPricingService) : ICatalogSupportService
+    IPrescriptionPricingService prescriptionPricingService,
+    IOptions<PrescriptionPricingOptions> prescriptionPricingOptions) : ICatalogSupportService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
+    private readonly PrescriptionPricingOptions _prescriptionPricingOptions = prescriptionPricingOptions.Value;
 
     public async Task<PrescriptionEligibilityResponse?> GetPrescriptionEligibilityAsync(
         int productId,
@@ -73,6 +77,19 @@ public class CatalogSupportService(
             IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
             ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate
         };
+    }
+
+    public Task<PrescriptionOptionsResponse> GetPrescriptionOptionsAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var response = new PrescriptionOptionsResponse
+        {
+            LensMaterials = MapPricingOptions(_prescriptionPricingOptions.MaterialPriceAdjustments),
+            Coatings = MapPricingOptions(_prescriptionPricingOptions.CoatingPriceAdjustments)
+        };
+
+        return Task.FromResult(response);
     }
 
     public async Task<PrescriptionPricingResponse> CalculatePrescriptionPricingAsync(
@@ -155,5 +172,42 @@ public class CatalogSupportService(
             "PRICING_CALCULATION_FAILED",
             "Unable to calculate prescription pricing",
             new { field, issue });
+    }
+
+    private static IReadOnlyList<PrescriptionPricingOptionResponse> MapPricingOptions(
+        IReadOnlyDictionary<string, decimal>? options)
+    {
+        if (options is null || options.Count == 0)
+        {
+            return [];
+        }
+
+        return options
+            .Where(option => !string.IsNullOrWhiteSpace(option.Key))
+            .OrderBy(option => option.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(option =>
+            {
+                var code = option.Key.Trim();
+                return new PrescriptionPricingOptionResponse
+                {
+                    Code = code,
+                    Label = BuildOptionLabel(code),
+                    PriceAdjustment = option.Value
+                };
+            })
+            .ToList();
+    }
+
+    private static string BuildOptionLabel(string code)
+    {
+        var words = code
+            .Replace('-', ' ')
+            .Replace('_', ' ')
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        return words.Length == 0
+            ? code
+            : string.Join(' ', words.Select(word =>
+                char.ToUpperInvariant(word[0]) + (word.Length == 1 ? string.Empty : word[1..])));
     }
 }
