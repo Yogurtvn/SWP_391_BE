@@ -8,6 +8,9 @@ public class CheckoutOrderRequest
     [MinLength(1)]
     public List<int> CartItemIds { get; set; } = [];
 
+    [MaxLength(30)]
+    public string? OrderType { get; set; }
+
     [Required]
     [MaxLength(255)]
     public string ReceiverName { get; set; } = string.Empty;

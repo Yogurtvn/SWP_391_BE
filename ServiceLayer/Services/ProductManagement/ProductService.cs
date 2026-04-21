@@ -74,12 +74,13 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
                             .Select(variant => (decimal?)variant.Price)
                             .Min() ?? product.BasePrice) <= request.MaxPrice.Value)),
             orderBy: query => ApplyProductOrdering(query, sortBy, sortDescending, includeInactive),
-            includeProperties: "Variants.Inventory,Images",
+            includeProperties: "Variants.Inventory,Variants.Promotion,Images",
             tracked: false,
             cancellationToken: cancellationToken);
 
+        var now = DateTime.UtcNow;
         var items = pagedProducts.Items
-            .Select(product => MapToListItem(product, includeInactive))
+            .Select(product => MapToListItem(product, includeInactive, now))
             .ToList();
 
         return PagedResult<ProductListItemResponse>.Create(
@@ -273,7 +274,10 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         }
     }
 
-    private static ProductListItemResponse MapToListItem(RepositoryLayer.Entities.Product product, bool includeInactive)
+    private static ProductListItemResponse MapToListItem(
+        RepositoryLayer.Entities.Product product,
+        bool includeInactive,
+        DateTime currentTime)
     {
         var visibleVariants = GetVisibleVariants(product, includeInactive)
             .ToList();
@@ -292,7 +296,12 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             ThumbnailUrl = primaryImage?.ImageUrl,
             IsActive = product.IsActive,
             IsAvailable = visibleVariants.Any(variant => (variant.Inventory?.Quantity ?? 0) > 0),
-            IsPreOrderAllowed = visibleVariants.Any(variant => variant.Inventory?.IsPreOrderAllowed == true)
+            IsReadyAvailable = visibleVariants.Any(variant => (variant.Inventory?.Quantity ?? 0) > 0),
+            IsPreOrderAllowed = visibleVariants.Any(variant => variant.Inventory?.IsPreOrderAllowed == true),
+            Variants = visibleVariants
+                .OrderBy(variant => variant.VariantId)
+                .Select(variant => MapVariantToListItem(variant, currentTime))
+                .ToList()
         };
     }
 
@@ -342,7 +351,10 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             DiscountAmount = pricing.DiscountAmount,
             FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
-            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false
+            IsReadyAvailable = (variant.Inventory?.Quantity ?? 0) > 0,
+            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = variant.Inventory?.PreOrderNote
         };
     }
 

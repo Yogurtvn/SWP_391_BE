@@ -47,6 +47,7 @@ public class OrderService(
         [OrderStatus.AwaitingStock] =
         [
             OrderStatus.Confirmed,
+            OrderStatus.Processing,
             OrderStatus.Cancelled
         ],
         [OrderStatus.Processing] =
@@ -101,7 +102,8 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
         }
 
-        var orderType = ResolveCheckoutOrderType(cartItems);
+        var requestedOrderType = ParseCheckoutOrderType(request.OrderType);
+        var orderType = ResolveCheckoutOrderType(cartItems, requestedOrderType);
         var orderItems = BuildCheckoutOrderItems(userId, cartItems, orderType, now);
         var result = await CreateOrderAsync(
             userId,
@@ -120,6 +122,7 @@ public class OrderService(
         return new CheckoutOrderResponse
         {
             OrderId = result.Order.OrderId,
+            OrderType = ApiEnumMapper.ToApiOrderType(result.Order.OrderType),
             TotalAmount = result.Order.TotalAmount,
             OrderStatus = ApiEnumMapper.ToApiOrderStatus(result.Order.OrderStatus),
             Payment = MapCheckoutPayment(result.Payment, result.PaymentAction)
@@ -294,6 +297,9 @@ public class OrderService(
                 .ThenInclude(item => item.Variant)
                     .ThenInclude(variant => variant.Product)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
                 .ThenInclude(item => item.LensType)
             .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Prescription)
@@ -420,6 +426,9 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
@@ -437,6 +446,11 @@ public class OrderService(
                     OrderItemId = item.OrderItemId,
                     VariantId = item.VariantId,
                     Quantity = item.Quantity,
+                    StockQuantity = item.Variant.Inventory?.Quantity ?? 0,
+                    IsReadyAvailable = (item.Variant.Inventory?.Quantity ?? 0) >= item.Quantity,
+                    IsPreOrderAllowed = item.Variant.Inventory?.IsPreOrderAllowed ?? false,
+                    ExpectedRestockDate = item.Variant.Inventory?.ExpectedRestockDate,
+                    PreOrderNote = item.Variant.Inventory?.PreOrderNote,
                     UnitPrice = item.UnitPrice,
                     OriginalUnitPrice = item.OriginalUnitPrice,
                     DiscountPercent = item.DiscountPercent,
@@ -461,6 +475,9 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
@@ -481,6 +498,11 @@ public class OrderService(
             OrderItemId = orderItem.OrderItemId,
             VariantId = orderItem.VariantId,
             Quantity = orderItem.Quantity,
+            StockQuantity = orderItem.Variant.Inventory?.Quantity ?? 0,
+            IsReadyAvailable = (orderItem.Variant.Inventory?.Quantity ?? 0) >= orderItem.Quantity,
+            IsPreOrderAllowed = orderItem.Variant.Inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = orderItem.Variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = orderItem.Variant.Inventory?.PreOrderNote,
             SelectedColor = orderItem.SelectedColor,
             TotalPrice = (orderItem.UnitPrice + (orderItem.LensPrice ?? 0m)) * orderItem.Quantity,
             OriginalUnitPrice = orderItem.OriginalUnitPrice,
@@ -1011,8 +1033,13 @@ public class OrderService(
         return preparedIds;
     }
 
-    private static OrderType ResolveCheckoutOrderType(IEnumerable<CartItem> cartItems)
+    private static OrderType ResolveCheckoutOrderType(IEnumerable<CartItem> cartItems, OrderType? requestedOrderType)
     {
+        if (requestedOrderType.HasValue)
+        {
+            return requestedOrderType.Value;
+        }
+
         var distinctOrderTypes = cartItems
             .Select(item => item.OrderType)
             .Distinct()
@@ -1226,6 +1253,25 @@ public class OrderService(
         return orderType;
     }
 
+    private static OrderType? ParseCheckoutOrderType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!ApiEnumMapper.TryParseOrderType(value, out var orderType))
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "CHECKOUT_FAILED",
+                "Unable to checkout selected items",
+                new { field = "orderType", issue = "orderType must be 'ready', 'preOrder', or 'prescription'" });
+        }
+
+        return orderType;
+    }
+
     private static OrderStatus ParseOrderStatus(string? value)
     {
         if (!ApiEnumMapper.TryParseOrderStatus(value, out var orderStatus))
@@ -1375,6 +1421,11 @@ public class OrderService(
                     VariantColor = item.Variant.Color,
                     SelectedColor = item.SelectedColor,
                     Quantity = item.Quantity,
+                    StockQuantity = item.Variant.Inventory?.Quantity ?? 0,
+                    IsReadyAvailable = (item.Variant.Inventory?.Quantity ?? 0) >= item.Quantity,
+                    IsPreOrderAllowed = item.Variant.Inventory?.IsPreOrderAllowed ?? false,
+                    ExpectedRestockDate = item.Variant.Inventory?.ExpectedRestockDate,
+                    PreOrderNote = item.Variant.Inventory?.PreOrderNote,
                     OriginalUnitPrice = item.OriginalUnitPrice,
                     DiscountPercent = item.DiscountPercent,
                     DiscountAmount = item.DiscountAmount,

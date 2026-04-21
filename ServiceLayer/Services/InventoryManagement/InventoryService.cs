@@ -113,7 +113,10 @@ public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
         {
             VariantId = inventory.VariantId,
             Quantity = inventory.Quantity,
-            IsPreOrderAllowed = inventory.IsPreOrderAllowed
+            IsReadyAvailable = inventory.Quantity > 0,
+            IsPreOrderAllowed = inventory.IsPreOrderAllowed,
+            ExpectedRestockDate = inventory.ExpectedRestockDate,
+            PreOrderNote = inventory.PreOrderNote
         };
     }
 
@@ -123,8 +126,10 @@ public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
         {
             VariantId = inventory.VariantId,
             Quantity = inventory.Quantity,
+            IsReadyAvailable = inventory.Quantity > 0,
             IsPreOrderAllowed = inventory.IsPreOrderAllowed,
-            ExpectedRestockDate = inventory.ExpectedRestockDate
+            ExpectedRestockDate = inventory.ExpectedRestockDate,
+            PreOrderNote = inventory.PreOrderNote
         };
     }
 

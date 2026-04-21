@@ -292,7 +292,10 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
             DiscountAmount = pricing.DiscountAmount,
             FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
-            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false
+            IsReadyAvailable = (variant.Inventory?.Quantity ?? 0) > 0,
+            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = variant.Inventory?.PreOrderNote
         };
     }
 
@@ -313,8 +316,10 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
             DiscountAmount = pricing.DiscountAmount,
             FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
+            IsReadyAvailable = (variant.Inventory?.Quantity ?? 0) > 0,
             IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
-            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate
+            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = variant.Inventory?.PreOrderNote
         };
     }
 

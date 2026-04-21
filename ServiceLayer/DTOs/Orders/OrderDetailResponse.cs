@@ -55,6 +55,16 @@ public class OrderItemResponse
 
     public int Quantity { get; set; }
 
+    public int StockQuantity { get; set; }
+
+    public bool IsReadyAvailable { get; set; }
+
+    public bool IsPreOrderAllowed { get; set; }
+
+    public DateTime? ExpectedRestockDate { get; set; }
+
+    public string? PreOrderNote { get; set; }
+
     public decimal UnitPrice { get; set; }
 
     public decimal OriginalUnitPrice { get; set; }

@@ -24,7 +24,7 @@ public class CartService(
         var cart = await GetCartAsync(
             userId,
             tracked: true,
-            includeProperties: "CartItems.Variant,CartItems.CartPrescriptionDetail.LensType");
+            includeProperties: "CartItems.Variant.Product,CartItems.Variant.Inventory,CartItems.CartPrescriptionDetail.LensType");
 
         if (cart is null)
         {
@@ -104,6 +104,7 @@ public class CartService(
             throw CreateInvalidCartItemException("quantity", "quantity must be greater than 0");
         }
 
+        var hasExplicitOrderType = !string.IsNullOrWhiteSpace(request.OrderType);
         var orderType = ParseStandardOrderType(request.OrderType);
         var variant = await GetActiveVariantAsync(variantId);
 
@@ -112,7 +113,7 @@ public class CartService(
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant");
         }
 
-        ValidateStandardOrderRequest(variant, orderType, quantity);
+        ValidateStandardOrderRequest(variant, orderType, quantity, requireReadyStock: hasExplicitOrderType);
 
         var now = DateTime.UtcNow;
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
@@ -195,7 +196,7 @@ public class CartService(
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant", "Invalid cart item data");
         }
 
-        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity);
+        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity, requireReadyStock: false);
 
         var now = DateTime.UtcNow;
         var pricing = PromotionPricingHelper.Calculate(cartItem.Variant, now);
@@ -590,13 +591,27 @@ public class CartService(
 
     private static CartItemResponse MapCartItem(CartItem cartItem)
     {
+        var variant = cartItem.Variant;
+        var inventory = variant?.Inventory;
+        var stockQuantity = inventory?.Quantity ?? 0;
+
         return new CartItemResponse
         {
             CartItemId = cartItem.CartItemId,
             VariantId = cartItem.VariantId,
+            ProductId = variant?.ProductId ?? 0,
+            ProductName = variant?.Product?.ProductName ?? string.Empty,
+            Sku = variant?.Sku ?? string.Empty,
+            VariantColor = variant?.Color,
+            VariantSize = variant?.Size,
             ItemType = ToApiCartItemType(cartItem.ItemType),
             OrderType = ToApiOrderType(cartItem.OrderType),
             Quantity = cartItem.Quantity,
+            StockQuantity = stockQuantity,
+            IsReadyAvailable = stockQuantity >= cartItem.Quantity,
+            IsPreOrderAllowed = inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = inventory?.ExpectedRestockDate,
+            PreOrderNote = inventory?.PreOrderNote,
             SelectedColor = cartItem.SelectedColor,
             UnitPrice = cartItem.UnitPrice,
             OriginalUnitPrice = cartItem.OriginalUnitPrice,
@@ -831,13 +846,18 @@ public class CartService(
 
         return normalizedValue switch
         {
+            null => OrderType.Ready,
             "ready" => OrderType.Ready,
             "preorder" => OrderType.PreOrder,
             _ => throw CreateInvalidCartItemException("orderType", "orderType must be 'ready' or 'preOrder'")
         };
     }
 
-    private static void ValidateStandardOrderRequest(ProductVariant variant, OrderType orderType, int quantity)
+    private static void ValidateStandardOrderRequest(
+        ProductVariant variant,
+        OrderType orderType,
+        int quantity,
+        bool requireReadyStock = true)
     {
         if (variant.Inventory is null)
         {
@@ -846,7 +866,7 @@ public class CartService(
                 "variantId must reference a variant with inventory configured");
         }
 
-        if (orderType == OrderType.Ready && variant.Inventory.Quantity < quantity)
+        if (orderType == OrderType.Ready && requireReadyStock && variant.Inventory.Quantity < quantity)
         {
             throw CreateInvalidCartItemException(
                 "quantity",

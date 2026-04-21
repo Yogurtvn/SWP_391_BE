@@ -1,14 +1,16 @@
 namespace ServiceLayer.DTOs.Inventory.Response;
 
-// DTO trả về thông tin inventory trong danh sách (dùng cho GET /api/inventories với phân trang)
-// Có thêm field expectedRestockDate so với InventoryDtoResponse
 public class InventoryListDtoResponse
 {
-    public int VariantId { get; set; }                    // ID của product variant
+    public int VariantId { get; set; }
 
-    public int Quantity { get; set; }                     // Số lượng tồn kho hiện tại
+    public int Quantity { get; set; }
 
-    public bool IsPreOrderAllowed { get; set; }           // Có cho phép đặt hàng trước không
+    public bool IsReadyAvailable { get; set; }
 
-    public DateTime? ExpectedRestockDate { get; set; }    // Ngày dự kiến nhập hàng lại (nullable)
+    public bool IsPreOrderAllowed { get; set; }
+
+    public DateTime? ExpectedRestockDate { get; set; }
+
+    public string? PreOrderNote { get; set; }
 }
