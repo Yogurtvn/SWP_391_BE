@@ -6,6 +6,8 @@ public class CalculatePrescriptionPricingRequest
 
     public int? LensTypeId { get; set; }
 
+    public string? LensMaterial { get; set; }
+
     public List<string>? Coatings { get; set; }
 
     public int? Quantity { get; set; }

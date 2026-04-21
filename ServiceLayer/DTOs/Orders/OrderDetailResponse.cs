@@ -68,6 +68,12 @@ public class OrderItemResponse
     public string? PromotionNameSnapshot { get; set; }
 
     public decimal LineTotal { get; set; }
+
+    public int? LensTypeId { get; set; }
+
+    public decimal? LensPrice { get; set; }
+
+    public int? PrescriptionId { get; set; }
 }
 
 public class OrderPaymentResponse

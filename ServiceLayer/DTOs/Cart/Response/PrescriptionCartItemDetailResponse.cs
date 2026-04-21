@@ -12,6 +12,12 @@ public class PrescriptionCartItemDetailResponse
 
     public List<string> Coatings { get; set; } = [];
 
+    public decimal LensBasePrice { get; set; }
+
+    public decimal MaterialPrice { get; set; }
+
+    public decimal CoatingPrice { get; set; }
+
     public decimal LensPrice { get; set; }
 
     public PrescriptionEyeResponse RightEye { get; set; } = new();
