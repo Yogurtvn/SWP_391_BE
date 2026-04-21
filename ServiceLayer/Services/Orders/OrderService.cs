@@ -420,6 +420,7 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
@@ -444,7 +445,8 @@ public class OrderService(
                     PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice,
-                    PrescriptionId = item.PrescriptionId
+                    PrescriptionId = item.PrescriptionId,
+                    Prescription = MapOrderItemPrescription(item.Prescription)
                 })
                 .ToList()
         };
@@ -459,6 +461,7 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
@@ -487,7 +490,8 @@ public class OrderService(
             PromotionNameSnapshot = orderItem.PromotionNameSnapshot,
             LensTypeId = orderItem.LensTypeId,
             LensPrice = orderItem.LensPrice,
-            PrescriptionId = orderItem.PrescriptionId
+            PrescriptionId = orderItem.PrescriptionId,
+            Prescription = MapOrderItemPrescription(orderItem.Prescription)
         };
     }
 
@@ -1372,7 +1376,8 @@ public class OrderService(
                     LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice,
-                    PrescriptionId = item.PrescriptionId
+                    PrescriptionId = item.PrescriptionId,
+                    Prescription = MapOrderItemPrescription(item.Prescription)
                 })
                 .ToList(),
             Payment = latestPayment is null
@@ -1411,6 +1416,43 @@ public class OrderService(
                 })
                 .ToList()
         };
+    }
+
+    private static OrderItemPrescriptionResponse? MapOrderItemPrescription(PrescriptionSpec? prescription)
+    {
+        return prescription is null
+            ? null
+            : new OrderItemPrescriptionResponse
+            {
+                PrescriptionId = prescription.PrescriptionId,
+                LensTypeId = prescription.LensTypeId,
+                LensTypeCode = prescription.LensTypeCode,
+                LensMaterial = prescription.LensMaterial,
+                Coatings = DeserializeCoatings(prescription.Coatings).ToList(),
+                LensBasePrice = prescription.LensBasePrice,
+                MaterialPrice = prescription.MaterialPrice,
+                CoatingPrice = prescription.CoatingPrice,
+                TotalLensPrice = prescription.TotalLensPrice,
+                RightEye = new OrderPrescriptionEyeResponse
+                {
+                    Sph = prescription.SphRight,
+                    Cyl = prescription.CylRight,
+                    Axis = prescription.AxisRight
+                },
+                LeftEye = new OrderPrescriptionEyeResponse
+                {
+                    Sph = prescription.SphLeft,
+                    Cyl = prescription.CylLeft,
+                    Axis = prescription.AxisLeft
+                },
+                Pd = prescription.Pd,
+                PrescriptionImageUrl = prescription.PrescriptionImage,
+                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
+                StaffId = prescription.StaffId,
+                VerifiedAt = prescription.VerifiedAt,
+                Notes = prescription.Notes,
+                CreatedAt = prescription.CreatedAt
+            };
     }
 
     private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)

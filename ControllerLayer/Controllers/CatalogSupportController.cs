@@ -46,6 +46,14 @@ public class CatalogSupportController(ICatalogSupportService catalogSupportServi
     }
 
     [AllowAnonymous]
+    [HttpGet("prescription-options")]
+    public async Task<ActionResult<PrescriptionOptionsResponse>> GetPrescriptionOptions(CancellationToken cancellationToken)
+    {
+        var result = await _catalogSupportService.GetPrescriptionOptionsAsync(cancellationToken);
+        return Ok(result);
+    }
+
+    [AllowAnonymous]
     [HttpPost("prescription-pricings/calculate")]
     public async Task<ActionResult<PrescriptionPricingResponse>> CalculatePrescriptionPricing(
         [FromBody] CalculatePrescriptionPricingRequest request,

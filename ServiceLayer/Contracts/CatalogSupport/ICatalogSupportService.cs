@@ -13,6 +13,9 @@ public interface ICatalogSupportService
         int variantId,
         CancellationToken cancellationToken = default);
 
+    Task<PrescriptionOptionsResponse> GetPrescriptionOptionsAsync(
+        CancellationToken cancellationToken = default);
+
     Task<PrescriptionPricingResponse> CalculatePrescriptionPricingAsync(
         CalculatePrescriptionPricingRequest request,
         CancellationToken cancellationToken = default);

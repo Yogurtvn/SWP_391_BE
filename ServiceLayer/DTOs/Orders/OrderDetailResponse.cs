@@ -74,6 +74,8 @@ public class OrderItemResponse
     public decimal? LensPrice { get; set; }
 
     public int? PrescriptionId { get; set; }
+
+    public OrderItemPrescriptionResponse? Prescription { get; set; }
 }
 
 public class OrderPaymentResponse
