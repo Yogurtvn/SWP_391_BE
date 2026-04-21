@@ -1,15 +1,25 @@
+using Microsoft.Extensions.Logging;
 using RepositoryLayer.Common;
 using RepositoryLayer.Entities;
+using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Email;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.DTOs.StockReceipt.Request;
 using ServiceLayer.DTOs.StockReceipt.Response;
 
 namespace ServiceLayer.Services.StockReceiptManagement;
 
-public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
+public class StockReceiptService(
+    IUnitOfWork unitOfWork,
+    IEmailService emailService,
+    ILogger<StockReceiptService> logger) : IStockReceiptService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IEmailService _emailService = emailService;
+    private readonly ILogger<StockReceiptService> _logger = logger;
+    private const string BackInStockSubject = "product is back in stock";
+    private const string BackInStockBody = "Your preorder item is now back in stock and your order will be processed soon.";
 
     public async Task<StockReceiptDtoResponse> CreateStockReceiptAsync(
         CreateStockReceiptRequest request,
@@ -67,6 +77,7 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
 
+            await NotifyAwaitingPreOrdersAsync(request.VariantId, cancellationToken);
             return MapToDto(stockReceipt);
         }
         catch
@@ -116,6 +127,54 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
         var stockReceipt = await repository.GetByIdAsync(receiptId);
 
         return stockReceipt is null ? null : MapToDto(stockReceipt);
+    }
+
+    private async Task NotifyAwaitingPreOrdersAsync(int variantId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var orderRepository = _unitOfWork.Repository<Order>();
+            var preorderOrders = await orderRepository.FindAsync(
+                filter: order =>
+                    order.OrderType == OrderType.PreOrder &&
+                    order.OrderStatus == OrderStatus.AwaitingStock &&
+                    order.OrderItems.Any(item => item.VariantId == variantId),
+                includeProperties: "User",
+                tracked: false);
+
+            var recipientEmails = preorderOrders
+                .Select(order => order.User.Email?.Trim())
+                .Where(email => !string.IsNullOrWhiteSpace(email))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var recipientEmail in recipientEmails)
+            {
+                try
+                {
+                    await _emailService.SendEmailAsync(
+                        recipientEmail!,
+                        BackInStockSubject,
+                        BackInStockBody,
+                        cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Failed to send preorder back-in-stock notification. VariantId: {VariantId}, RecipientEmail: {RecipientEmail}",
+                        variantId,
+                        recipientEmail);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to collect awaiting preorder recipients after stock receipt. VariantId: {VariantId}",
+                variantId);
+        }
     }
 
     private static StockReceiptDtoResponse MapToDto(RepositoryLayer.Entities.StockReceipt stockReceipt)

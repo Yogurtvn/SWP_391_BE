@@ -655,11 +655,14 @@ public class OrderService(
         }
 
         var now = DateTime.UtcNow;
+        var initialOrderStatus = orderType == OrderType.PreOrder
+            ? OrderStatus.AwaitingStock
+            : OrderStatus.Pending;
         var order = new Order
         {
             UserId = userId,
             OrderType = orderType,
-            OrderStatus = OrderStatus.Pending,
+            OrderStatus = initialOrderStatus,
             ReceiverName = receiverName,
             ReceiverPhone = receiverPhone,
             ShippingAddress = shippingAddress,
@@ -686,7 +689,7 @@ public class OrderService(
 
         order.OrderStatusHistories.Add(new OrderStatusHistory
         {
-            OrderStatus = OrderStatus.Pending,
+            OrderStatus = initialOrderStatus,
             UpdatedByUserId = createdByUserId,
             Note = "Order created.",
             UpdatedAt = now
@@ -700,9 +703,14 @@ public class OrderService(
             {
                 ValidateOrderVariant(item);
 
-                if (item.RequirePreOrderEnabled && item.Variant.Inventory?.IsPreOrderAllowed != true)
+                if (item.RequirePreOrderEnabled)
                 {
-                    throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    var inventory = item.Variant.Inventory;
+
+                    if (inventory?.IsPreOrderAllowed != true || inventory.Quantity >= item.Quantity)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
                 }
 
                 if (item.ReserveInventory)

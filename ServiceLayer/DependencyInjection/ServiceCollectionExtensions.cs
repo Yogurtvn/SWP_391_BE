@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RepositoryLayer.DependencyInjection;
 using ServiceLayer.Configuration;
+using ServiceLayer.Contracts.Email;
 using ServiceLayer.Contracts.Auth;
 using ServiceLayer.Contracts.Cart;
 using ServiceLayer.Contracts.CatalogSupport;
@@ -29,6 +30,7 @@ using ServiceLayer.Services.CartManagement;
 using ServiceLayer.Services.CatalogSupport;
 using ServiceLayer.Services.Catalog;
 using ServiceLayer.Services.CategoryManagement;
+using ServiceLayer.Services.Email;
 using ServiceLayer.Services.InventoryManagement;
 using ServiceLayer.Services.LensTypeManagement;
 using ServiceLayer.Services.Orders;
@@ -70,11 +72,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IProductImageService, ProductImageService>();
         services.AddScoped<IInventoryService, InventoryService>();
         services.AddScoped<IStockReceiptService, StockReceiptService>();
+        services.AddScoped<IEmailService, SmtpEmailService>();
         services.AddScoped<IReportService, ReportService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<ICategoryService, CategoryService>();
 
         services.Configure<CloudinaryOptions>(configuration.GetSection(CloudinaryOptions.SectionName));
+        services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
         services.Configure<PrescriptionPricingOptions>(configuration.GetSection(PrescriptionPricingOptions.SectionName));
         services.PostConfigure<CloudinaryOptions>(options =>
         {
