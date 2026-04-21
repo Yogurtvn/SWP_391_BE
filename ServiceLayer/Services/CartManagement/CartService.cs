@@ -853,11 +853,21 @@ public class CartService(
                 $"Only {variant.Inventory.Quantity} item(s) are currently available for ready order");
         }
 
-        if (orderType == OrderType.PreOrder && !variant.Inventory.IsPreOrderAllowed)
+        if (orderType == OrderType.PreOrder)
         {
-            throw CreateInvalidCartItemException(
-                "orderType",
-                "preOrder is not allowed for this variant");
+            if (!variant.Inventory.IsPreOrderAllowed)
+            {
+                throw CreateInvalidCartItemException(
+                    "orderType",
+                    "preOrder is not allowed for this variant");
+            }
+
+            if (variant.Inventory.Quantity >= quantity)
+            {
+                throw CreateInvalidCartItemException(
+                    "orderType",
+                    "preOrder is only allowed when ready stock is insufficient");
+            }
         }
     }
 
