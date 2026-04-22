@@ -62,6 +62,7 @@ public class StockReceiptService(
                 variant.Inventory = inventory;
             }
 
+            var previousQuantity = inventory.Quantity;
             inventory.Quantity += request.QuantityReceived;
 
             var stockReceipt = new RepositoryLayer.Entities.StockReceipt
@@ -77,7 +78,19 @@ public class StockReceiptService(
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
 
-            await NotifyAwaitingPreOrdersAsync(request.VariantId, cancellationToken);
+            if (previousQuantity <= 0 && inventory.Quantity > 0)
+            {
+                await NotifyAwaitingPreOrdersAsync(request.VariantId, cancellationToken);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Skipping preorder notification because variant stock did not transition from out-of-stock to in-stock. VariantId: {VariantId}, PreviousQuantity: {PreviousQuantity}, CurrentQuantity: {CurrentQuantity}",
+                    request.VariantId,
+                    previousQuantity,
+                    inventory.Quantity);
+            }
+
             return MapToDto(stockReceipt);
         }
         catch
@@ -147,6 +160,14 @@ public class StockReceiptService(
                 .Where(email => !string.IsNullOrWhiteSpace(email))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            if (recipientEmails.Count == 0)
+            {
+                _logger.LogInformation(
+                    "No awaiting preorder recipients found after stock receipt. VariantId: {VariantId}",
+                    variantId);
+                return;
+            }
 
             foreach (var recipientEmail in recipientEmails)
             {
