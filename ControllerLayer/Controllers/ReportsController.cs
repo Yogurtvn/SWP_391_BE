@@ -7,7 +7,7 @@ namespace ControllerLayer.Controllers;
 
 [Route("api/reports")]
 [ApiController]
-[Authorize(Roles = "Admin")]
+//[Authorize(Roles = "Admin")]
 public class ReportsController(IReportService reportService) : ControllerBase
 {
     private readonly IReportService _reportService = reportService;
@@ -60,6 +60,16 @@ public class ReportsController(IReportService reportService) : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _reportService.GetDashboardAsync(startDate, endDate, cancellationToken);
+        return Ok(result);
+    }
+
+    [AllowAnonymous]
+    [HttpGet("dashboard-chart")]
+    public async Task<ActionResult<DashboardChartResponse>> GetDashboardChart(
+        [FromQuery] string timeRange = "year",
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _reportService.GetDashboardChartAsync(timeRange, cancellationToken);
         return Ok(result);
     }
 }
