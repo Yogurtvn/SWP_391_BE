@@ -1,14 +1,18 @@
 using System.Net;
 using System.Net.Mail;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ServiceLayer.Configuration;
 using ServiceLayer.Contracts.Email;
 
 namespace ServiceLayer.Services.Email;
 
-public class SmtpEmailService(IOptions<EmailSettings> emailOptions) : IEmailService
+public class SmtpEmailService(
+    IOptions<EmailSettings> emailOptions,
+    ILogger<SmtpEmailService> logger) : IEmailService
 {
     private readonly EmailSettings _emailSettings = emailOptions.Value;
+    private readonly ILogger<SmtpEmailService> _logger = logger;
 
     public async Task SendEmailAsync(
         string toEmail,
@@ -39,22 +43,32 @@ public class SmtpEmailService(IOptions<EmailSettings> emailOptions) : IEmailServ
         using var smtpClient = new SmtpClient(_emailSettings.Host.Trim(), _emailSettings.Port)
         {
             EnableSsl = _emailSettings.EnableSsl,
-            DeliveryMethod = SmtpDeliveryMethod.Network
+            DeliveryMethod = SmtpDeliveryMethod.Network,
+            UseDefaultCredentials = false,
+            Credentials = new NetworkCredential(
+                _emailSettings.Username.Trim(),
+                _emailSettings.Password)
         };
 
-        if (string.IsNullOrWhiteSpace(_emailSettings.Username))
+        try
         {
-            smtpClient.UseDefaultCredentials = true;
+            await smtpClient.SendMailAsync(message, cancellationToken);
+            _logger.LogInformation(
+                "Email sent successfully. To: {ToEmail}, Subject: {Subject}",
+                toEmail.Trim(),
+                subject.Trim());
         }
-        else
+        catch (Exception ex)
         {
-            smtpClient.UseDefaultCredentials = false;
-            smtpClient.Credentials = new NetworkCredential(
-                _emailSettings.Username.Trim(),
-                _emailSettings.Password);
+            _logger.LogError(
+                ex,
+                "Failed to send email via SMTP. To: {ToEmail}, Host: {Host}, Port: {Port}, EnableSsl: {EnableSsl}",
+                toEmail.Trim(),
+                _emailSettings.Host.Trim(),
+                _emailSettings.Port,
+                _emailSettings.EnableSsl);
+            throw;
         }
-
-        await smtpClient.SendMailAsync(message, cancellationToken);
     }
 
     private void ValidateConfiguration()
@@ -69,10 +83,16 @@ public class SmtpEmailService(IOptions<EmailSettings> emailOptions) : IEmailServ
             throw new InvalidOperationException("SMTP port is invalid. Set EmailSettings:Port to a positive value.");
         }
 
-        if (string.IsNullOrWhiteSpace(_emailSettings.Username) && string.IsNullOrWhiteSpace(_emailSettings.FromEmail))
+        if (string.IsNullOrWhiteSpace(_emailSettings.Username))
         {
             throw new InvalidOperationException(
-                "SMTP sender is not configured. Set EmailSettings:FromEmail or EmailSettings:Username.");
+                "SMTP username is not configured. Set EmailSettings:Username.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_emailSettings.Password))
+        {
+            throw new InvalidOperationException(
+                "SMTP password is not configured. Set EmailSettings:Password.");
         }
     }
 
