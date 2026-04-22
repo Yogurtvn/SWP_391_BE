@@ -4,6 +4,7 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Payment;
 using ServiceLayer.Contracts.Prescription;
@@ -20,7 +21,8 @@ public class OrderService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
     IPaymentService paymentService,
-    IPrescriptionPricingService prescriptionPricingService) : IOrderService
+    IPrescriptionPricingService prescriptionPricingService,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses =
     [
@@ -67,6 +69,8 @@ public class OrderService(
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPaymentService _paymentService = paymentService;
     private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
+    private readonly record struct InventoryQuantityTransition(int VariantId, int PreviousQuantity, int CurrentQuantity);
 
     public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
@@ -353,11 +357,12 @@ public class OrderService(
         }
 
         var note = NormalizeText(request.Reason);
+        IReadOnlyCollection<InventoryQuantityTransition> inventoryTransitions = Array.Empty<InventoryQuantityTransition>();
 
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
-            await CancelOrderInternalAsync(order, userId, note ?? "Order cancelled by customer.", cancellationToken);
+            inventoryTransitions = await CancelOrderInternalAsync(order, userId, note ?? "Order cancelled by customer.", cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
         catch
@@ -365,6 +370,8 @@ public class OrderService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "order:cancel", cancellationToken);
 
         return new OrderCancelResponse
         {
@@ -541,6 +548,7 @@ public class OrderService(
         }
 
         ValidateStatusTransition(order.OrderStatus, nextOrderStatus);
+        IReadOnlyCollection<InventoryQuantityTransition> inventoryTransitions = Array.Empty<InventoryQuantityTransition>();
 
         try
         {
@@ -549,7 +557,7 @@ public class OrderService(
             if (nextOrderStatus == OrderStatus.Cancelled)
             {
                 order.StaffId = staffUserId;
-                await CancelOrderInternalAsync(
+                inventoryTransitions = await CancelOrderInternalAsync(
                     order,
                     staffUserId,
                     NormalizeText(request.Note) ?? "Order cancelled by staff.",
@@ -585,6 +593,8 @@ public class OrderService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "order:cancel", cancellationToken);
 
         return new OrderStatusUpdatedResponse
         {
@@ -1053,13 +1063,14 @@ public class OrderService(
         return distinctOrderTypes[0];
     }
 
-    private async Task CancelOrderInternalAsync(
+    private async Task<IReadOnlyCollection<InventoryQuantityTransition>> CancelOrderInternalAsync(
         Order order,
         int updatedByUserId,
         string note,
         CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var inventoryTransitions = new Dictionary<int, InventoryQuantityTransition>();
 
         foreach (var orderItem in order.OrderItems)
         {
@@ -1080,7 +1091,21 @@ public class OrderService(
                     orderItem.Variant.Inventory = inventory;
                 }
 
+                var previousQuantity = inventory.Quantity;
                 inventory.Quantity += orderItem.Quantity;
+                var currentQuantity = inventory.Quantity;
+
+                if (inventoryTransitions.TryGetValue(orderItem.VariantId, out var transition))
+                {
+                    inventoryTransitions[orderItem.VariantId] = transition with { CurrentQuantity = currentQuantity };
+                }
+                else
+                {
+                    inventoryTransitions[orderItem.VariantId] = new InventoryQuantityTransition(
+                        orderItem.VariantId,
+                        previousQuantity,
+                        currentQuantity);
+                }
             }
         }
 
@@ -1107,6 +1132,23 @@ public class OrderService(
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        return inventoryTransitions.Values.ToArray();
+    }
+
+    private async Task NotifyBackInStockTransitionsAsync(
+        IEnumerable<InventoryQuantityTransition> transitions,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        foreach (var transition in transitions)
+        {
+            await _backInStockNotificationService.HandleStockChangeAsync(
+                transition.VariantId,
+                transition.PreviousQuantity,
+                transition.CurrentQuantity,
+                source,
+                cancellationToken);
+        }
     }
 
     private async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken)

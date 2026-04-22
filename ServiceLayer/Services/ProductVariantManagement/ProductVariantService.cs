@@ -1,6 +1,7 @@
 using RepositoryLayer.Common;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.ProductVariant;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.ProductVariant.Request;
@@ -11,9 +12,12 @@ using System.Net;
 
 namespace ServiceLayer.Services.ProductVariantManagement;
 
-public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantService
+public class ProductVariantService(
+    IUnitOfWork unitOfWork,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IProductVariantService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<PagedResult<ProductVariantListItemResponse>> GetVariantsByProductAsync(
         int productId,
@@ -149,6 +153,7 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
         variant.Size = NormalizeText(request.Size);
         variant.Color = NormalizeText(request.Color);
         variant.Price = request.Price;
+        var previousQuantity = variant.Inventory?.Quantity ?? 0;
 
         var inventory = variant.Inventory;
         if (inventory is null)
@@ -165,6 +170,14 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
 
         variantRepository.Update(variant);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        var currentQuantity = inventory.Quantity;
+
+        await _backInStockNotificationService.HandleStockChangeAsync(
+            variantId,
+            previousQuantity,
+            currentQuantity,
+            source: "variant:update",
+            cancellationToken);
 
         return new MessageResponse
         {
