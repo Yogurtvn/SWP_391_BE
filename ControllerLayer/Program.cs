@@ -116,11 +116,12 @@ var app = builder.Build();
 var shouldEnableSwagger = app.Environment.IsDevelopment() || swaggerEnabled;
 
 // Apply pending migrations automatically on startup.
-using (var scope = app.Services.CreateScope())
-{
-    var dbContext = scope.ServiceProvider.GetRequiredService<OnlineEyewearDbContext>();
-    dbContext.Database.Migrate();
-}
+// comment beacause error when deploy to Azure App Service, because the user doesn't have permission to create migration history table in the database
+//using (var scope = app.Services.CreateScope())
+//{
+//    var dbContext = scope.ServiceProvider.GetRequiredService<OnlineEyewearDbContext>();
+//    dbContext.Database.Migrate();
+//}
 
 if (shouldEnableSwagger)
 {
