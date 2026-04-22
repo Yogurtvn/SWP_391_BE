@@ -1,10 +1,7 @@
-using Microsoft.Extensions.Logging;
 using RepositoryLayer.Common;
-using RepositoryLayer.Entities;
-using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
-using ServiceLayer.Contracts.Email;
 using ServiceLayer.Contracts.Inventory;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.DTOs.Inventory.Request;
 using ServiceLayer.DTOs.Inventory.Response;
 using ServiceLayer.Exceptions;
@@ -15,14 +12,10 @@ namespace ServiceLayer.Services.InventoryManagement;
 
 public class InventoryService(
     IUnitOfWork unitOfWork,
-    IEmailService emailService,
-    ILogger<InventoryService> logger) : IInventoryService
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IInventoryService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
-    private readonly IEmailService _emailService = emailService;
-    private readonly ILogger<InventoryService> _logger = logger;
-    private const string BackInStockSubject = "product is back in stock";
-    private const string BackInStockBody = "Your preorder item is now back in stock and your order will be processed soon.";
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<PagedResult<InventoryListDtoResponse>> GetInventoriesAsync(
         PaginationRequest paginationRequest,
@@ -91,14 +84,17 @@ public class InventoryService(
         inventory.IsPreOrderAllowed = request.IsPreOrderAllowed;
         inventory.ExpectedRestockDate = request.ExpectedRestockDate;
         inventory.PreOrderNote = request.PreOrderNote?.Trim();
+        var currentQuantity = inventory.Quantity;
 
         repository.Update(inventory);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        if (previousQuantity <= 0 && inventory.Quantity > 0)
-        {
-            await NotifyAwaitingPreOrdersAsync(variantId, cancellationToken);
-        }
+        await _backInStockNotificationService.HandleStockChangeAsync(
+            variantId,
+            previousQuantity,
+            currentQuantity,
+            source: "inventory:update",
+            cancellationToken);
 
         return true;
     }
@@ -201,61 +197,5 @@ public class InventoryService(
             "INVALID_QUERY",
             "Invalid inventory query",
             new { field, issue });
-    }
-
-    private async Task NotifyAwaitingPreOrdersAsync(int variantId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var orderRepository = _unitOfWork.Repository<Order>();
-            var preorderOrders = await orderRepository.FindAsync(
-                filter: order =>
-                    order.OrderType == OrderType.PreOrder &&
-                    order.OrderStatus == OrderStatus.AwaitingStock &&
-                    order.OrderItems.Any(item => item.VariantId == variantId),
-                includeProperties: "User",
-                tracked: false);
-
-            var recipientEmails = preorderOrders
-                .Select(order => order.User.Email?.Trim())
-                .Where(email => !string.IsNullOrWhiteSpace(email))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (recipientEmails.Count == 0)
-            {
-                _logger.LogInformation(
-                    "No awaiting preorder recipients found after inventory update. VariantId: {VariantId}",
-                    variantId);
-                return;
-            }
-
-            foreach (var recipientEmail in recipientEmails)
-            {
-                try
-                {
-                    await _emailService.SendEmailAsync(
-                        recipientEmail!,
-                        BackInStockSubject,
-                        BackInStockBody,
-                        cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(
-                        ex,
-                        "Failed to send preorder back-in-stock notification after inventory update. VariantId: {VariantId}, RecipientEmail: {RecipientEmail}",
-                        variantId,
-                        recipientEmail);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Failed to collect awaiting preorder recipients after inventory update. VariantId: {VariantId}",
-                variantId);
-        }
     }
 }

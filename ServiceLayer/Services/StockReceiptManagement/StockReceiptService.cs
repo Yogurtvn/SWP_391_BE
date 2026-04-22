@@ -1,9 +1,7 @@
-using Microsoft.Extensions.Logging;
 using RepositoryLayer.Common;
 using RepositoryLayer.Entities;
-using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
-using ServiceLayer.Contracts.Email;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.DTOs.StockReceipt.Request;
 using ServiceLayer.DTOs.StockReceipt.Response;
@@ -12,14 +10,10 @@ namespace ServiceLayer.Services.StockReceiptManagement;
 
 public class StockReceiptService(
     IUnitOfWork unitOfWork,
-    IEmailService emailService,
-    ILogger<StockReceiptService> logger) : IStockReceiptService
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IStockReceiptService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
-    private readonly IEmailService _emailService = emailService;
-    private readonly ILogger<StockReceiptService> _logger = logger;
-    private const string BackInStockSubject = "product is back in stock";
-    private const string BackInStockBody = "Your preorder item is now back in stock and your order will be processed soon.";
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<StockReceiptDtoResponse> CreateStockReceiptAsync(
         CreateStockReceiptRequest request,
@@ -32,6 +26,9 @@ public class StockReceiptService(
         var inventoryRepository = _unitOfWork.Repository<Inventory>();
         var receiptRepository = _unitOfWork.Repository<RepositoryLayer.Entities.StockReceipt>();
         var now = DateTime.UtcNow;
+        var previousQuantity = 0;
+        var currentQuantity = 0;
+        RepositoryLayer.Entities.StockReceipt? stockReceipt = null;
 
         try
         {
@@ -62,10 +59,11 @@ public class StockReceiptService(
                 variant.Inventory = inventory;
             }
 
-            var previousQuantity = inventory.Quantity;
+            previousQuantity = inventory.Quantity;
             inventory.Quantity += request.QuantityReceived;
+            currentQuantity = inventory.Quantity;
 
-            var stockReceipt = new RepositoryLayer.Entities.StockReceipt
+            stockReceipt = new RepositoryLayer.Entities.StockReceipt
             {
                 VariantId = request.VariantId,
                 QuantityReceived = request.QuantityReceived,
@@ -77,27 +75,21 @@ public class StockReceiptService(
             await receiptRepository.AddAsync(stockReceipt);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
-
-            if (previousQuantity <= 0 && inventory.Quantity > 0)
-            {
-                await NotifyAwaitingPreOrdersAsync(request.VariantId, cancellationToken);
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Skipping preorder notification because variant stock did not transition from out-of-stock to in-stock. VariantId: {VariantId}, PreviousQuantity: {PreviousQuantity}, CurrentQuantity: {CurrentQuantity}",
-                    request.VariantId,
-                    previousQuantity,
-                    inventory.Quantity);
-            }
-
-            return MapToDto(stockReceipt);
         }
         catch
         {
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
+
+        await _backInStockNotificationService.HandleStockChangeAsync(
+            request.VariantId,
+            previousQuantity,
+            currentQuantity,
+            source: "stock-receipt:create",
+            cancellationToken);
+
+        return MapToDto(stockReceipt!);
     }
 
     public async Task<PagedResult<StockReceiptListDtoResponse>> GetStockReceiptsAsync(
@@ -140,62 +132,6 @@ public class StockReceiptService(
         var stockReceipt = await repository.GetByIdAsync(receiptId);
 
         return stockReceipt is null ? null : MapToDto(stockReceipt);
-    }
-
-    private async Task NotifyAwaitingPreOrdersAsync(int variantId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var orderRepository = _unitOfWork.Repository<Order>();
-            var preorderOrders = await orderRepository.FindAsync(
-                filter: order =>
-                    order.OrderType == OrderType.PreOrder &&
-                    order.OrderStatus == OrderStatus.AwaitingStock &&
-                    order.OrderItems.Any(item => item.VariantId == variantId),
-                includeProperties: "User",
-                tracked: false);
-
-            var recipientEmails = preorderOrders
-                .Select(order => order.User.Email?.Trim())
-                .Where(email => !string.IsNullOrWhiteSpace(email))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (recipientEmails.Count == 0)
-            {
-                _logger.LogInformation(
-                    "No awaiting preorder recipients found after stock receipt. VariantId: {VariantId}",
-                    variantId);
-                return;
-            }
-
-            foreach (var recipientEmail in recipientEmails)
-            {
-                try
-                {
-                    await _emailService.SendEmailAsync(
-                        recipientEmail!,
-                        BackInStockSubject,
-                        BackInStockBody,
-                        cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(
-                        ex,
-                        "Failed to send preorder back-in-stock notification. VariantId: {VariantId}, RecipientEmail: {RecipientEmail}",
-                        variantId,
-                        recipientEmail);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Failed to collect awaiting preorder recipients after stock receipt. VariantId: {VariantId}",
-                variantId);
-        }
     }
 
     private static StockReceiptDtoResponse MapToDto(RepositoryLayer.Entities.StockReceipt stockReceipt)
