@@ -18,7 +18,8 @@ public class SmtpEmailService(
         string toEmail,
         string subject,
         string body,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool isBodyHtml = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toEmail);
         ArgumentException.ThrowIfNullOrWhiteSpace(subject);
@@ -36,7 +37,7 @@ public class SmtpEmailService(
             From = fromAddress,
             Subject = subject,
             Body = body,
-            IsBodyHtml = false
+            IsBodyHtml = isBodyHtml
         };
         message.To.Add(toEmail.Trim());
 
