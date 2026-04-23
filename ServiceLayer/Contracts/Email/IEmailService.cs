@@ -6,5 +6,6 @@ public interface IEmailService
         string toEmail,
         string subject,
         string body,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool isBodyHtml = false);
 }

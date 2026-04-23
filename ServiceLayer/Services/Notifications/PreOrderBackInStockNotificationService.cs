@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Configuration;
 using ServiceLayer.Contracts.Email;
 using ServiceLayer.Contracts.Notifications;
 
@@ -10,13 +12,14 @@ namespace ServiceLayer.Services.Notifications;
 public class PreOrderBackInStockNotificationService(
     IUnitOfWork unitOfWork,
     IEmailService emailService,
+    IOptions<EmailSettings> emailOptions,
     ILogger<PreOrderBackInStockNotificationService> logger) : IPreOrderBackInStockNotificationService
 {
-    private const string BackInStockSubject = "product is back in stock";
-    private const string BackInStockBody = "Your preorder item is now back in stock and your order will be processed soon.";
+    private const string BackInStockSubject = "[E-World] S\u1EA3n ph\u1EA9m b\u1EA1n \u0111\u1EB7t tr\u01B0\u1EDBc \u0111\u00E3 v\u1EC1 h\u00E0ng";
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly IEmailService _emailService = emailService;
+    private readonly EmailSettings _emailSettings = emailOptions.Value;
     private readonly ILogger<PreOrderBackInStockNotificationService> _logger = logger;
 
     public async Task HandleStockChangeAsync(
@@ -52,16 +55,20 @@ public class PreOrderBackInStockNotificationService(
                     order.OrderType == OrderType.PreOrder &&
                     order.OrderStatus == OrderStatus.AwaitingStock &&
                     order.OrderItems.Any(item => item.VariantId == variantId),
-                includeProperties: "User",
+                includeProperties: "User,OrderItems.Variant.Product,OrderItems.Variant.Inventory",
                 tracked: false);
 
-            var recipientEmails = preorderOrders
-                .Select(order => order.User.Email?.Trim())
-                .Where(email => !string.IsNullOrWhiteSpace(email))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            var recipients = preorderOrders
+                .Select(order => MapRecipient(order, variantId))
+                .Where(recipient => recipient is not null)
+                .Cast<BackInStockRecipient>()
+                .GroupBy(recipient => recipient.Email, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group
+                    .OrderByDescending(recipient => recipient.OrderId)
+                    .First())
                 .ToList();
 
-            if (recipientEmails.Count == 0)
+            if (recipients.Count == 0)
             {
                 _logger.LogInformation(
                     "No recipients for preorder back-in-stock notification. Source: {Source}, VariantId: {VariantId}",
@@ -70,21 +77,37 @@ public class PreOrderBackInStockNotificationService(
                 return;
             }
 
-            foreach (var recipientEmail in recipientEmails)
+            var updatedAt = DateTime.Now;
+
+            foreach (var recipient in recipients)
             {
                 try
                 {
+                    var body = PreOrderBackInStockEmailTemplateBuilder.Build(
+                        new PreOrderBackInStockEmailTemplateData
+                        {
+                            CustomerName = recipient.CustomerName,
+                            OrderId = recipient.OrderId,
+                            ProductName = recipient.ProductName,
+                            Sku = recipient.Sku,
+                            VariantInfo = recipient.VariantInfo,
+                            ExpectedRestockDate = recipient.ExpectedRestockDate,
+                            UpdatedAt = updatedAt,
+                            OrderTrackingUrl = _emailSettings.OrderTrackingUrl
+                        });
+
                     await _emailService.SendEmailAsync(
-                        recipientEmail!,
+                        recipient.Email,
                         BackInStockSubject,
-                        BackInStockBody,
-                        cancellationToken);
+                        body,
+                        cancellationToken,
+                        isBodyHtml: true);
 
                     _logger.LogInformation(
                         "Send success preorder back-in-stock notification. Source: {Source}, VariantId: {VariantId}, RecipientEmail: {RecipientEmail}",
                         source,
                         variantId,
-                        recipientEmail);
+                        recipient.Email);
                 }
                 catch (Exception ex)
                 {
@@ -93,7 +116,7 @@ public class PreOrderBackInStockNotificationService(
                         "Send fail preorder back-in-stock notification. Source: {Source}, VariantId: {VariantId}, RecipientEmail: {RecipientEmail}",
                         source,
                         variantId,
-                        recipientEmail);
+                        recipient.Email);
                 }
             }
         }
@@ -105,5 +128,77 @@ public class PreOrderBackInStockNotificationService(
                 source,
                 variantId);
         }
+    }
+
+    private static BackInStockRecipient? MapRecipient(Order order, int variantId)
+    {
+        var email = order.User.Email?.Trim();
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return null;
+        }
+
+        var orderItem = order.OrderItems.FirstOrDefault(item => item.VariantId == variantId);
+        var variant = orderItem?.Variant;
+
+        return new BackInStockRecipient
+        {
+            Email = email,
+            CustomerName = Normalize(order.User.FullName),
+            OrderId = order.OrderId,
+            ProductName = Normalize(variant?.Product.ProductName),
+            Sku = Normalize(variant?.Sku),
+            VariantInfo = BuildVariantInfo(variant),
+            ExpectedRestockDate = variant?.Inventory?.ExpectedRestockDate
+        };
+    }
+
+    private static string? BuildVariantInfo(ProductVariant? variant)
+    {
+        if (variant is null)
+        {
+            return null;
+        }
+
+        var variantPieces = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(variant.Color))
+        {
+            variantPieces.Add($"M\u00E0u: {variant.Color.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(variant.Size))
+        {
+            variantPieces.Add($"Size: {variant.Size.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(variant.FrameType))
+        {
+            variantPieces.Add($"D\u00F2ng g\u1ECDng: {variant.FrameType.Trim()}");
+        }
+
+        return variantPieces.Count == 0 ? null : string.Join(" | ", variantPieces);
+    }
+
+    private static string? Normalize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private sealed class BackInStockRecipient
+    {
+        public required string Email { get; init; }
+
+        public string? CustomerName { get; init; }
+
+        public int OrderId { get; init; }
+
+        public string? ProductName { get; init; }
+
+        public string? Sku { get; init; }
+
+        public string? VariantInfo { get; init; }
+
+        public DateTime? ExpectedRestockDate { get; init; }
     }
 }

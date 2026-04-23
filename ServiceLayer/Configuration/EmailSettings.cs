@@ -17,4 +17,6 @@ public class EmailSettings
     public string FromName { get; set; } = "Online Eyewear";
 
     public bool EnableSsl { get; set; } = true;
+
+    public string? OrderTrackingUrl { get; set; }
 }
