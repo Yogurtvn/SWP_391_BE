@@ -4,6 +4,7 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.Prescription.Request;
 using ServiceLayer.DTOs.Prescription.Response;
@@ -16,48 +17,18 @@ namespace ServiceLayer.Services.PrescriptionManagement;
 public class PrescriptionService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IPrescriptionPricingService prescriptionPricingService) : IPrescriptionService
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IPrescriptionService
 {
     private static readonly HashSet<PrescriptionStatus> StaffReviewTargetStatuses =
     [
         PrescriptionStatus.Reviewing,
         PrescriptionStatus.Approved,
-        PrescriptionStatus.Rejected,
-        PrescriptionStatus.InProduction
+        PrescriptionStatus.Rejected
     ];
-
-    private static readonly Dictionary<PrescriptionStatus, HashSet<PrescriptionStatus>> AllowedStatusTransitions = new()
-    {
-        [PrescriptionStatus.Submitted] =
-        [
-            PrescriptionStatus.Reviewing,
-            PrescriptionStatus.NeedMoreInfo,
-            PrescriptionStatus.Approved,
-            PrescriptionStatus.Rejected
-        ],
-        [PrescriptionStatus.Reviewing] =
-        [
-            PrescriptionStatus.NeedMoreInfo,
-            PrescriptionStatus.Approved,
-            PrescriptionStatus.Rejected
-        ],
-        [PrescriptionStatus.NeedMoreInfo] =
-        [
-            PrescriptionStatus.Submitted,
-            PrescriptionStatus.Reviewing,
-            PrescriptionStatus.Rejected
-        ],
-        [PrescriptionStatus.Approved] =
-        [
-            PrescriptionStatus.InProduction
-        ],
-        [PrescriptionStatus.Rejected] = [],
-        [PrescriptionStatus.InProduction] = []
-    };
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
-    private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<PagedResult<PrescriptionListItemResponse>> GetPrescriptionsAsync(
         GetPrescriptionsRequest request,
@@ -213,17 +184,41 @@ public class PrescriptionService(
             throw CreateApiException(HttpStatusCode.NotFound, "PRESCRIPTION_NOT_FOUND", "Prescription not found");
         }
 
-        ValidateStatusTransition(prescription.PrescriptionStatus, prescriptionStatus);
+        ValidatePrescriptionStatusTransition(prescription.PrescriptionStatus, prescriptionStatus);
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
-        var now = DateTime.UtcNow;
-        prescription.PrescriptionStatus = prescriptionStatus;
-        prescription.StaffId = staffUserId;
-        prescription.Notes = NormalizeOptionalNote(request.Notes);
-        prescription.VerifiedAt = prescriptionStatus is PrescriptionStatus.Approved or PrescriptionStatus.Rejected or PrescriptionStatus.InProduction
-            ? now
-            : null;
+        try
+        {
+            await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+            var now = DateTime.UtcNow;
+            prescription.PrescriptionStatus = prescriptionStatus;
+            prescription.StaffId = staffUserId;
+            prescription.Notes = NormalizeOptionalNote(request.Notes);
+            prescription.VerifiedAt = prescriptionStatus is PrescriptionStatus.Approved or PrescriptionStatus.Rejected
+                ? now
+                : null;
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            if (prescriptionStatus == PrescriptionStatus.Rejected)
+            {
+                inventoryTransitions = await CancelOrdersForRejectedPrescriptionAsync(
+                    prescriptionId,
+                    staffUserId,
+                    cancellationToken);
+            }
+
+            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+        }
+        catch
+        {
+            await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+            throw;
+        }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "prescription:rejected", cancellationToken);
 
         return new PrescriptionStatusResponse
         {
@@ -232,115 +227,38 @@ public class PrescriptionService(
         };
     }
 
-    public async Task<PrescriptionStatusResponse> RequestMoreInfoAsync(
+    public Task<PrescriptionStatusResponse> RequestMoreInfoAsync(
         int staffUserId,
         int prescriptionId,
         RequestMorePrescriptionInfoRequest request,
         CancellationToken cancellationToken = default)
     {
+        _ = staffUserId;
+        _ = prescriptionId;
         ArgumentNullException.ThrowIfNull(request);
+        _ = cancellationToken;
 
-        var notes = NormalizeOptionalNote(request.Notes);
-
-        if (notes is null)
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
-        }
-
-        var prescription = await GetTrackedPrescriptionAsync(prescriptionId, cancellationToken);
-
-        if (prescription is null)
-        {
-            throw CreateApiException(HttpStatusCode.NotFound, "PRESCRIPTION_NOT_FOUND", "Prescription not found");
-        }
-
-        ValidateStatusTransition(prescription.PrescriptionStatus, PrescriptionStatus.NeedMoreInfo);
-
-        prescription.PrescriptionStatus = PrescriptionStatus.NeedMoreInfo;
-        prescription.StaffId = staffUserId;
-        prescription.Notes = notes;
-        prescription.VerifiedAt = null;
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        return new PrescriptionStatusResponse
-        {
-            Message = "More info requested",
-            PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(PrescriptionStatus.NeedMoreInfo)
-        };
+        throw CreateApiException(
+            HttpStatusCode.Gone,
+            "PRESCRIPTION_FLOW_DEPRECATED",
+            "request-more-info flow has been deprecated");
     }
 
-    public async Task<PrescriptionStatusResponse> ResubmitPrescriptionAsync(
+    public Task<PrescriptionStatusResponse> ResubmitPrescriptionAsync(
         int userId,
         int prescriptionId,
         ResubmitPrescriptionRequest request,
         CancellationToken cancellationToken = default)
     {
+        _ = userId;
+        _ = prescriptionId;
         ArgumentNullException.ThrowIfNull(request);
+        _ = cancellationToken;
 
-        var prescription = await _dbContext.PrescriptionSpecs
-            .Include(current => current.LensType)
-            .FirstOrDefaultAsync(
-                current => current.PrescriptionId == prescriptionId && current.UserId == userId,
-                cancellationToken);
-
-        if (prescription is null)
-        {
-            throw CreateApiException(HttpStatusCode.NotFound, "PRESCRIPTION_NOT_FOUND", "Prescription not found");
-        }
-
-        if (prescription.PrescriptionStatus != PrescriptionStatus.NeedMoreInfo)
-        {
-            throw CreateApiException(
-                HttpStatusCode.Conflict,
-                "PRESCRIPTION_RESUBMIT_NOT_ALLOWED",
-                "Prescription resubmission is only allowed when status is needMoreInfo");
-        }
-
-        if (prescription.LensType is null || !prescription.LensType.IsActive)
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_INPUT", "Invalid prescription input");
-        }
-
-        ValidateStatusTransition(prescription.PrescriptionStatus, PrescriptionStatus.Submitted);
-
-        var preparedRequest = PrepareManualPrescriptionInput(request);
-        var recalculatedPricing = _prescriptionPricingService.Calculate(
-            framePrice: 0m,
-            lensBasePrice: prescription.LensType.Price,
-            lensMaterial: prescription.LensMaterial,
-            coatings: DeserializeCoatings(prescription.Coatings),
-            quantity: 1,
-            errorCode: "INVALID_PRESCRIPTION_INPUT",
-            errorMessage: "Invalid prescription input");
-
-        prescription.SphRight = preparedRequest.RightSph;
-        prescription.CylRight = preparedRequest.RightCyl;
-        prescription.AxisRight = preparedRequest.RightAxis;
-        prescription.SphLeft = preparedRequest.LeftSph;
-        prescription.CylLeft = preparedRequest.LeftCyl;
-        prescription.AxisLeft = preparedRequest.LeftAxis;
-        prescription.Pd = preparedRequest.Pd;
-        prescription.PrescriptionImage = preparedRequest.PrescriptionImageUrl;
-        prescription.Notes = preparedRequest.Notes;
-        prescription.LensTypeCode = prescription.LensType.LensCode;
-        prescription.LensMaterial = recalculatedPricing.LensMaterial;
-        prescription.Coatings = SerializeCoatings(recalculatedPricing.Coatings);
-        prescription.LensBasePrice = recalculatedPricing.LensBasePrice;
-        prescription.MaterialPrice = recalculatedPricing.MaterialPrice;
-        prescription.CoatingPrice = recalculatedPricing.CoatingPrice;
-        prescription.TotalLensPrice = recalculatedPricing.LensPrice;
-        prescription.PrescriptionStatus = PrescriptionStatus.Submitted;
-        prescription.StaffId = null;
-        prescription.VerifiedAt = null;
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        return new PrescriptionStatusResponse
-        {
-            Message = "Prescription resubmitted",
-            PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(PrescriptionStatus.Submitted)
-        };
+        throw CreateApiException(
+            HttpStatusCode.Gone,
+            "PRESCRIPTION_FLOW_DEPRECATED",
+            "resubmit flow has been deprecated");
     }
 
     private Task<PrescriptionSpec?> GetTrackedPrescriptionAsync(int prescriptionId, CancellationToken cancellationToken)
@@ -349,76 +267,82 @@ public class PrescriptionService(
             .FirstOrDefaultAsync(current => current.PrescriptionId == prescriptionId, cancellationToken);
     }
 
-    private static PreparedPrescriptionInput PrepareManualPrescriptionInput(ResubmitPrescriptionRequest request)
+    private async Task<IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition>> CancelOrdersForRejectedPrescriptionAsync(
+        int prescriptionId,
+        int staffUserId,
+        CancellationToken cancellationToken)
     {
-        var rightEye = request.RightEye;
-        var leftEye = request.LeftEye;
+        var orders = await _dbContext.Orders
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.Payments)
+                .ThenInclude(payment => payment.PaymentHistories)
+            .Include(current => current.OrderStatusHistories)
+            .Where(current =>
+                current.OrderType == OrderType.Prescription
+                && current.OrderItems.Any(item => item.PrescriptionId == prescriptionId))
+            .ToListAsync(cancellationToken);
 
-        if (rightEye?.Sph is null
-            || rightEye.Cyl is null
-            || rightEye.Axis is null
-            || leftEye?.Sph is null
-            || leftEye.Cyl is null
-            || leftEye.Axis is null
-            || request.Pd is null)
+        var mergedTransitions = new Dictionary<int, OrderWorkflowMutations.InventoryQuantityTransition>();
+
+        foreach (var order in orders)
         {
-            throw CreateApiException(
-                HttpStatusCode.BadRequest,
-                "INVALID_PRESCRIPTION_INPUT",
-                "Manual prescription input is required",
-                new { field = "manualPrescription", issue = "Manual prescription input is required" });
+            if (!OrderWorkflowPolicies.CanTransitionOrderStatus(
+                    order.OrderType,
+                    order.OrderStatus,
+                    OrderStatus.Cancelled))
+            {
+                continue;
+            }
+
+            var orderTransitions = await OrderWorkflowMutations.CancelOrderAsync(
+                _unitOfWork,
+                order,
+                staffUserId,
+                "Order cancelled automatically because prescription was rejected.",
+                cancellationToken);
+
+            foreach (var transition in orderTransitions)
+            {
+                if (mergedTransitions.TryGetValue(transition.VariantId, out var existingTransition))
+                {
+                    mergedTransitions[transition.VariantId] = existingTransition with
+                    {
+                        CurrentQuantity = transition.CurrentQuantity
+                    };
+                }
+                else
+                {
+                    mergedTransitions[transition.VariantId] = transition;
+                }
+            }
         }
 
-        ValidateAxisRange(rightEye.Axis.Value, "rightEye.axis");
-        ValidateAxisRange(leftEye.Axis.Value, "leftEye.axis");
-
-        if (request.Pd.Value <= 0)
-        {
-            throw CreateApiException(
-                HttpStatusCode.BadRequest,
-                "INVALID_PRESCRIPTION_INPUT",
-                "Invalid prescription input",
-                new { field = "pd", issue = "pd must be greater than 0" });
-        }
-
-        var notes = NormalizeOptionalNote(request.Notes);
-        var prescriptionImageUrl = NormalizePrescriptionImageReference(request.PrescriptionImageUrl);
-
-        return new PreparedPrescriptionInput(
-            rightEye.Sph.Value,
-            rightEye.Cyl.Value,
-            rightEye.Axis.Value,
-            leftEye.Sph.Value,
-            leftEye.Cyl.Value,
-            leftEye.Axis.Value,
-            request.Pd.Value,
-            notes,
-            prescriptionImageUrl);
+        return mergedTransitions.Values.ToArray();
     }
 
-    private static void ValidateStatusTransition(PrescriptionStatus currentStatus, PrescriptionStatus nextStatus)
+    private async Task NotifyBackInStockTransitionsAsync(
+        IEnumerable<OrderWorkflowMutations.InventoryQuantityTransition> transitions,
+        string source,
+        CancellationToken cancellationToken)
     {
-        if (currentStatus == nextStatus)
+        foreach (var transition in transitions)
         {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
-        }
-
-        if (!AllowedStatusTransitions.TryGetValue(currentStatus, out var allowedStatuses)
-            || !allowedStatuses.Contains(nextStatus))
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
+            await _backInStockNotificationService.HandleStockChangeAsync(
+                transition.VariantId,
+                transition.PreviousQuantity,
+                transition.CurrentQuantity,
+                source,
+                cancellationToken);
         }
     }
 
-    private static void ValidateAxisRange(int axis, string field)
+    private static void ValidatePrescriptionStatusTransition(PrescriptionStatus currentStatus, PrescriptionStatus nextStatus)
     {
-        if (axis is < 0 or > 180)
+        if (!OrderWorkflowPolicies.CanTransitionPrescriptionStatus(currentStatus, nextStatus))
         {
-            throw CreateApiException(
-                HttpStatusCode.BadRequest,
-                "INVALID_PRESCRIPTION_INPUT",
-                "Invalid prescription input",
-                new { field, issue = $"{field} must be between 0 and 180" });
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
         }
     }
 
@@ -434,49 +358,6 @@ public class PrescriptionService(
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
-    {
-        if (coatings is null || coatings.Count == 0)
-        {
-            return null;
-        }
-
-        var serialized = string.Join(",", coatings);
-
-        if (serialized.Length > 500)
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_INPUT", "Invalid prescription input");
-        }
-
-        return serialized;
-    }
-
-    private static string? NormalizePrescriptionImageReference(string? value)
-    {
-        var normalized = NormalizeText(value);
-
-        if (normalized is not null
-            && normalized.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-        {
-            throw CreateApiException(
-                HttpStatusCode.BadRequest,
-                "INVALID_PRESCRIPTION_INPUT",
-                "Invalid prescription input",
-                new { field = "prescriptionImageUrl", issue = "prescriptionImageUrl must be an uploaded image URL/path, not raw image data" });
-        }
-
-        if (normalized is not null && normalized.Length > 500)
-        {
-            throw CreateApiException(
-                HttpStatusCode.BadRequest,
-                "INVALID_PRESCRIPTION_INPUT",
-                "Invalid prescription input",
-                new { field = "prescriptionImageUrl", issue = "prescriptionImageUrl must not exceed 500 characters" });
-        }
-
-        return normalized;
     }
 
     private static string? NormalizeOptionalNote(string? value)
@@ -553,15 +434,4 @@ public class PrescriptionService(
     {
         return new ApiException((int)statusCode, errorCode, message, details);
     }
-
-    private sealed record PreparedPrescriptionInput(
-        decimal RightSph,
-        decimal RightCyl,
-        int RightAxis,
-        decimal LeftSph,
-        decimal LeftCyl,
-        int LeftAxis,
-        decimal Pd,
-        string? Notes,
-        string? PrescriptionImageUrl);
 }

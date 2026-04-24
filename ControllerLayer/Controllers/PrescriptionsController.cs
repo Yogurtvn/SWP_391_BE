@@ -77,6 +77,7 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
     }
 
     [Authorize(Roles = "Staff,Admin")]
+    [Obsolete("Deprecated. Use PATCH /api/prescriptions/{id}/review with reviewing/approved/rejected.")]
     [HttpPatch("{prescriptionId:int}/request-more-info")]
     public async Task<ActionResult<PrescriptionStatusResponse>> RequestMoreInfo(
         int prescriptionId,
@@ -100,6 +101,7 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
     }
 
     [Authorize(Roles = "Customer")]
+    [Obsolete("Deprecated. Resubmit flow is no longer supported.")]
     [HttpPatch("{prescriptionId:int}/resubmit")]
     public async Task<ActionResult<PrescriptionStatusResponse>> ResubmitPrescription(
         int prescriptionId,
