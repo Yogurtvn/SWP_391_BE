@@ -1,5 +1,7 @@
 namespace ServiceLayer.DTOs.Product.Response;
 
+using ServiceLayer.DTOs.ProductVariant.Response;
+
 public class ProductListItemResponse
 {
     public int ProductId { get; set; }
@@ -12,7 +14,13 @@ public class ProductListItemResponse
 
     public string? ThumbnailUrl { get; set; }
 
+    public bool IsActive { get; set; }
+
     public bool IsAvailable { get; set; }
 
+    public bool IsReadyAvailable { get; set; }
+
     public bool IsPreOrderAllowed { get; set; }
+
+    public IReadOnlyList<ProductVariantListItemResponse> Variants { get; set; } = [];
 }

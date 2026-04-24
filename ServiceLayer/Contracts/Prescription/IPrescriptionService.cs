@@ -26,4 +26,10 @@ public interface IPrescriptionService
         int prescriptionId,
         RequestMorePrescriptionInfoRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<PrescriptionStatusResponse> ResubmitPrescriptionAsync(
+        int userId,
+        int prescriptionId,
+        ResubmitPrescriptionRequest request,
+        CancellationToken cancellationToken = default);
 }

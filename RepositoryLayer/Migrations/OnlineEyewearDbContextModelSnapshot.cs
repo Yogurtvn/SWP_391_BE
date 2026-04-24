@@ -67,11 +67,35 @@ namespace RepositoryLayer.Migrations
                         .HasColumnType("datetime2")
                         .HasDefaultValueSql("GETDATE()");
 
+                    b.Property<decimal>("DiscountAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<decimal>("DiscountPercent")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<decimal>("FinalUnitPrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
+
                     b.Property<byte>("ItemType")
                         .HasColumnType("tinyint");
 
                     b.Property<byte>("OrderType")
                         .HasColumnType("tinyint");
+
+                    b.Property<decimal>("OriginalUnitPrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
 
                     b.Property<int>("Quantity")
                         .HasColumnType("int");
@@ -180,6 +204,12 @@ namespace RepositoryLayer.Migrations
 
                     b.Property<int>("LensTypeId")
                         .HasColumnType("int");
+
+                    b.Property<decimal>("MaterialPrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
 
                     b.Property<string>("Notes")
                         .HasMaxLength(255)
@@ -407,6 +437,24 @@ namespace RepositoryLayer.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("OrderItemId"));
 
+                    b.Property<decimal>("DiscountAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<decimal>("DiscountPercent")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<decimal>("FinalUnitPrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
+
                     b.Property<decimal?>("LensPrice")
                         .ValueGeneratedOnAdd()
                         .HasPrecision(10, 2)
@@ -419,8 +467,18 @@ namespace RepositoryLayer.Migrations
                     b.Property<int>("OrderId")
                         .HasColumnType("int");
 
+                    b.Property<decimal>("OriginalUnitPrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
+
                     b.Property<int?>("PrescriptionId")
                         .HasColumnType("int");
+
+                    b.Property<string>("PromotionNameSnapshot")
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
 
                     b.Property<int>("Quantity")
                         .HasColumnType("int");
@@ -522,7 +580,7 @@ namespace RepositoryLayer.Migrations
 
                     b.ToTable("Payments", null, t =>
                         {
-                            t.HasCheckConstraint("CK_Payments_PaymentMethod", "[PaymentMethod] IN (1, 2, 3)");
+                            t.HasCheckConstraint("CK_Payments_PaymentMethod", "[PaymentMethod] IN (1, 2)");
 
                             t.HasCheckConstraint("CK_Payments_PaymentStatus", "[PaymentStatus] IN (1, 2, 3)");
                         });
@@ -654,6 +712,12 @@ namespace RepositoryLayer.Migrations
 
                     b.Property<int>("LensTypeId")
                         .HasColumnType("int");
+
+                    b.Property<decimal>("MaterialPrice")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)")
+                        .HasDefaultValue(0m);
 
                     b.Property<string>("Notes")
                         .HasMaxLength(255)
@@ -836,6 +900,9 @@ namespace RepositoryLayer.Migrations
                     b.Property<int>("ProductId")
                         .HasColumnType("int");
 
+                    b.Property<int?>("PromotionId")
+                        .HasColumnType("int");
+
                     b.Property<string>("Size")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
@@ -850,10 +917,62 @@ namespace RepositoryLayer.Migrations
 
                     b.HasIndex("ProductId");
 
+                    b.HasIndex("PromotionId");
+
                     b.HasIndex("Sku")
                         .IsUnique();
 
                     b.ToTable("ProductVariants", (string)null);
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.Promotion", b =>
+                {
+                    b.Property<int>("PromotionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PromotionId"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<decimal>("DiscountPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<DateTime>("EndAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTime>("StartAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.HasKey("PromotionId");
+
+                    b.ToTable("Promotions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Promotions_DiscountPercent", "[DiscountPercent] > 0 AND [DiscountPercent] <= 100");
+                        });
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.StockReceipt", b =>
@@ -1163,7 +1282,14 @@ namespace RepositoryLayer.Migrations
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
+                    b.HasOne("RepositoryLayer.Entities.Promotion", "Promotion")
+                        .WithMany("Variants")
+                        .HasForeignKey("PromotionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Product");
+
+                    b.Navigation("Promotion");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.StockReceipt", b =>
@@ -1243,6 +1369,11 @@ namespace RepositoryLayer.Migrations
                     b.Navigation("OrderItems");
 
                     b.Navigation("StockReceipts");
+                });
+
+            modelBuilder.Entity("RepositoryLayer.Entities.Promotion", b =>
+                {
+                    b.Navigation("Variants");
                 });
 
             modelBuilder.Entity("RepositoryLayer.Entities.User", b =>

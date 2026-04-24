@@ -2,24 +2,29 @@ using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Cart;
+using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.Cart.Request;
 using ServiceLayer.DTOs.Cart.Response;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
 using System.Net;
 
 namespace ServiceLayer.Services.CartManagement;
 
-public class CartService(IUnitOfWork unitOfWork) : ICartService
+public class CartService(
+    IUnitOfWork unitOfWork,
+    IPrescriptionPricingService prescriptionPricingService) : ICartService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
 
     public async Task<CartDetailResponse> GetMyCartAsync(int userId, CancellationToken cancellationToken = default)
     {
         var cart = await GetCartAsync(
             userId,
             tracked: true,
-            includeProperties: "CartItems.Variant,CartItems.CartPrescriptionDetail.LensType");
+            includeProperties: "CartItems.Variant.Product,CartItems.Variant.Inventory,CartItems.CartPrescriptionDetail.LensType");
 
         if (cart is null)
         {
@@ -99,6 +104,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             throw CreateInvalidCartItemException("quantity", "quantity must be greater than 0");
         }
 
+        var hasExplicitOrderType = !string.IsNullOrWhiteSpace(request.OrderType);
         var orderType = ParseStandardOrderType(request.OrderType);
         var variant = await GetActiveVariantAsync(variantId);
 
@@ -107,7 +113,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant");
         }
 
-        ValidateStandardOrderRequest(variant, orderType, quantity);
+        ValidateStandardOrderRequest(variant, orderType, quantity, requireReadyStock: hasExplicitOrderType);
 
         var now = DateTime.UtcNow;
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
@@ -115,6 +121,8 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+            var pricing = PromotionPricingHelper.Calculate(variant, now);
 
             var cart = await GetOrCreateCartAsync(userId, now, cancellationToken);
             var cartItem = new CartItem
@@ -125,8 +133,12 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 OrderType = orderType,
                 Quantity = quantity,
                 SelectedColor = NormalizeText(variant.Color),
-                UnitPrice = variant.Price,
-                TotalPrice = variant.Price * quantity,
+                OriginalUnitPrice = pricing.OriginalPrice,
+                DiscountPercent = pricing.DiscountPercent,
+                DiscountAmount = pricing.DiscountAmount,
+                FinalUnitPrice = pricing.FinalPrice,
+                UnitPrice = pricing.FinalPrice,
+                TotalPrice = pricing.FinalPrice * quantity,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -172,7 +184,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             cartItemId,
             CartItemType.Standard,
             tracked: true,
-            includeProperties: "Cart,Variant.Product,Variant.Inventory");
+            includeProperties: "Cart,Variant.Product,Variant.Inventory,Variant.Promotion");
 
         if (cartItem is null)
         {
@@ -184,11 +196,19 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant", "Invalid cart item data");
         }
 
-        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity);
+        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity, requireReadyStock: false);
+
+        var now = DateTime.UtcNow;
+        var pricing = PromotionPricingHelper.Calculate(cartItem.Variant, now);
 
         cartItem.Quantity = quantity;
-        cartItem.TotalPrice = cartItem.UnitPrice * quantity;
-        cartItem.UpdatedAt = DateTime.UtcNow;
+        cartItem.OriginalUnitPrice = pricing.OriginalPrice;
+        cartItem.DiscountPercent = pricing.DiscountPercent;
+        cartItem.DiscountAmount = pricing.DiscountAmount;
+        cartItem.FinalUnitPrice = pricing.FinalPrice;
+        cartItem.UnitPrice = pricing.FinalPrice;
+        cartItem.TotalPrice = pricing.FinalPrice * quantity;
+        cartItem.UpdatedAt = now;
         cartItem.Cart.UpdatedAt = cartItem.UpdatedAt;
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -251,8 +271,17 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 "lensTypeId must reference an existing active lens type");
         }
 
-        var pricing = CalculatePrescriptionPricing(variant.Price, lensType.Price, preparedRequest.Quantity);
         var now = DateTime.UtcNow;
+        var pricing = PromotionPricingHelper.Calculate(variant, now);
+
+        var prescriptionPricing = _prescriptionPricingService.Calculate(
+            pricing.FinalPrice,
+            lensType.Price,
+            preparedRequest.LensMaterial,
+            preparedRequest.Coatings,
+            preparedRequest.Quantity,
+            errorCode: "INVALID_PRESCRIPTION_INPUT",
+            errorMessage: "Invalid prescription input");
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
         var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
 
@@ -269,8 +298,12 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 OrderType = OrderType.Prescription,
                 Quantity = preparedRequest.Quantity,
                 SelectedColor = NormalizeText(variant.Color),
-                UnitPrice = variant.Price,
-                TotalPrice = pricing.TotalPrice,
+                OriginalUnitPrice = pricing.OriginalPrice,
+                DiscountPercent = pricing.DiscountPercent,
+                DiscountAmount = pricing.DiscountAmount,
+                FinalUnitPrice = pricing.FinalPrice,
+                UnitPrice = pricing.FinalPrice,
+                TotalPrice = prescriptionPricing.TotalPrice,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -279,7 +312,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             await cartItemRepository.AddAsync(cartItem);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            var prescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, pricing, now);
+            var prescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, prescriptionPricing, now);
             await detailRepository.AddAsync(prescriptionDetail);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
@@ -290,7 +323,10 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 ItemType = ToApiCartItemType(cartItem.ItemType),
                 OrderType = ToApiOrderType(cartItem.OrderType),
                 FramePrice = cartItem.UnitPrice,
-                LensPrice = pricing.LensPricePerUnit,
+                LensBasePrice = prescriptionPricing.LensBasePrice,
+                MaterialPrice = prescriptionPricing.MaterialPrice,
+                CoatingPrice = prescriptionPricing.CoatingPrice,
+                LensPrice = prescriptionPricing.LensPrice,
                 TotalPrice = cartItem.TotalPrice
             };
         }
@@ -340,27 +376,40 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 "lensTypeId must reference an existing active lens type");
         }
 
-        var pricing = CalculatePrescriptionPricing(variant.Price, lensType.Price, preparedRequest.Quantity);
         var now = DateTime.UtcNow;
+        var pricing = PromotionPricingHelper.Calculate(variant, now);
+
+        var prescriptionPricing = _prescriptionPricingService.Calculate(
+            pricing.FinalPrice,
+            lensType.Price,
+            preparedRequest.LensMaterial,
+            preparedRequest.Coatings,
+            preparedRequest.Quantity,
+            errorCode: "INVALID_PRESCRIPTION_INPUT",
+            errorMessage: "Invalid prescription input");
         var detailRepository = _unitOfWork.Repository<CartPrescriptionDetail>();
 
         cartItem.VariantId = variant.VariantId;
         cartItem.Quantity = preparedRequest.Quantity;
         cartItem.SelectedColor = NormalizeText(variant.Color);
         cartItem.OrderType = OrderType.Prescription;
-        cartItem.UnitPrice = variant.Price;
-        cartItem.TotalPrice = pricing.TotalPrice;
+        cartItem.OriginalUnitPrice = pricing.OriginalPrice;
+        cartItem.DiscountPercent = pricing.DiscountPercent;
+        cartItem.DiscountAmount = pricing.DiscountAmount;
+        cartItem.FinalUnitPrice = pricing.FinalPrice;
+        cartItem.UnitPrice = pricing.FinalPrice;
+        cartItem.TotalPrice = prescriptionPricing.TotalPrice;
         cartItem.UpdatedAt = now;
         cartItem.Cart.UpdatedAt = now;
 
         if (cartItem.CartPrescriptionDetail is null)
         {
-            cartItem.CartPrescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, pricing, now);
+            cartItem.CartPrescriptionDetail = CreatePrescriptionDetail(cartItem.CartItemId, lensType, preparedRequest, prescriptionPricing, now);
             await detailRepository.AddAsync(cartItem.CartPrescriptionDetail);
         }
         else
         {
-            ApplyPrescriptionDetail(cartItem.CartPrescriptionDetail, lensType, preparedRequest, pricing);
+            ApplyPrescriptionDetail(cartItem.CartPrescriptionDetail, lensType, preparedRequest, prescriptionPricing);
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -499,7 +548,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             variant => variant.VariantId == variantId
                 && variant.IsActive
                 && variant.Product.IsActive,
-            includeProperties: "Product,Inventory",
+            includeProperties: "Product,Inventory,Promotion",
             tracked: false);
     }
 
@@ -512,7 +561,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 && variant.Product.IsActive
                 && variant.Product.ProductType == ProductType.Frame
                 && variant.Product.PrescriptionCompatible,
-            includeProperties: "Product",
+            includeProperties: "Product,Promotion",
             tracked: false);
     }
 
@@ -542,14 +591,33 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
 
     private static CartItemResponse MapCartItem(CartItem cartItem)
     {
+        var variant = cartItem.Variant;
+        var inventory = variant?.Inventory;
+        var stockQuantity = inventory?.Quantity ?? 0;
+
         return new CartItemResponse
         {
             CartItemId = cartItem.CartItemId,
             VariantId = cartItem.VariantId,
+            ProductId = variant?.ProductId ?? 0,
+            ProductName = variant?.Product?.ProductName ?? string.Empty,
+            Sku = variant?.Sku ?? string.Empty,
+            VariantColor = variant?.Color,
+            VariantSize = variant?.Size,
             ItemType = ToApiCartItemType(cartItem.ItemType),
             OrderType = ToApiOrderType(cartItem.OrderType),
             Quantity = cartItem.Quantity,
+            StockQuantity = stockQuantity,
+            IsReadyAvailable = stockQuantity >= cartItem.Quantity,
+            IsPreOrderAllowed = inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = inventory?.ExpectedRestockDate,
+            PreOrderNote = inventory?.PreOrderNote,
+            SelectedColor = cartItem.SelectedColor,
             UnitPrice = cartItem.UnitPrice,
+            OriginalUnitPrice = cartItem.OriginalUnitPrice,
+            DiscountPercent = cartItem.DiscountPercent,
+            DiscountAmount = cartItem.DiscountAmount,
+            FinalUnitPrice = cartItem.FinalUnitPrice,
             TotalPrice = cartItem.TotalPrice,
             Prescription = cartItem.CartPrescriptionDetail is null
                 ? null
@@ -560,6 +628,9 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                     LensName = cartItem.CartPrescriptionDetail.LensType?.LensName,
                     LensMaterial = cartItem.CartPrescriptionDetail.LensMaterial,
                     Coatings = DeserializeCoatings(cartItem.CartPrescriptionDetail.Coatings),
+                    LensBasePrice = cartItem.CartPrescriptionDetail.LensBasePrice,
+                    MaterialPrice = cartItem.CartPrescriptionDetail.MaterialPrice,
+                    CoatingPrice = cartItem.CartPrescriptionDetail.CoatingPrice,
                     LensPrice = cartItem.CartPrescriptionDetail.TotalLensPrice,
                     RightEye = new PrescriptionEyeResponse
                     {
@@ -591,9 +662,9 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
             throw CreateInvalidPrescriptionException("variantId", "variantId must be greater than 0");
         }
 
-        if (quantity <= 0)
+        if (quantity != 1)
         {
-            throw CreateInvalidPrescriptionException("quantity", "quantity must be greater than 0");
+            throw CreateInvalidPrescriptionException("quantity", "quantity must be exactly 1 for prescription items");
         }
 
         if (lensTypeId <= 0)
@@ -628,7 +699,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
 
         var lensMaterial = NormalizeOptionalText(request.LensMaterial, 50, "lensMaterial");
         var notes = NormalizeOptionalText(request.Notes, 255, "notes");
-        var prescriptionImageUrl = NormalizeOptionalText(request.PrescriptionImageUrl, 500, "prescriptionImageUrl");
+        var prescriptionImageUrl = NormalizePrescriptionImageReference(request.PrescriptionImageUrl, "prescriptionImageUrl");
         var coatings = NormalizeCoatings(request.Coatings);
 
         return new PreparedPrescriptionRequest(
@@ -652,7 +723,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         int cartItemId,
         LensType lensType,
         PreparedPrescriptionRequest request,
-        PrescriptionPricing pricing,
+        PrescriptionPriceCalculation pricing,
         DateTime now)
     {
         var detail = new CartPrescriptionDetail
@@ -669,15 +740,16 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         CartPrescriptionDetail detail,
         LensType lensType,
         PreparedPrescriptionRequest request,
-        PrescriptionPricing pricing)
+        PrescriptionPriceCalculation pricing)
     {
         detail.LensTypeId = lensType.LensTypeId;
         detail.LensTypeCode = lensType.LensCode;
         detail.LensMaterial = request.LensMaterial;
-        detail.Coatings = request.Coatings;
+        detail.Coatings = SerializeCoatings(request.Coatings);
         detail.LensBasePrice = pricing.LensBasePrice;
-        detail.CoatingPrice = pricing.CoatingPricePerUnit;
-        detail.TotalLensPrice = pricing.LensPricePerUnit;
+        detail.MaterialPrice = pricing.MaterialPrice;
+        detail.CoatingPrice = pricing.CoatingPrice;
+        detail.TotalLensPrice = pricing.LensPrice;
         detail.SphRight = request.RightSph;
         detail.CylRight = request.RightCyl;
         detail.AxisRight = request.RightAxis;
@@ -687,20 +759,6 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         detail.Pd = request.Pd;
         detail.PrescriptionImage = request.PrescriptionImageUrl;
         detail.Notes = request.Notes;
-    }
-
-    private static PrescriptionPricing CalculatePrescriptionPricing(decimal framePrice, decimal lensBasePrice, int quantity)
-    {
-        // TODO: introduce coating-specific pricing once the spec defines chargeable coating options.
-        var coatingPricePerUnit = 0m;
-        var lensPricePerUnit = lensBasePrice + coatingPricePerUnit;
-
-        return new PrescriptionPricing(
-            FramePricePerUnit: framePrice,
-            LensBasePrice: lensBasePrice,
-            CoatingPricePerUnit: coatingPricePerUnit,
-            LensPricePerUnit: lensPricePerUnit,
-            TotalPrice: (framePrice + lensPricePerUnit) * quantity);
     }
 
     private static string? NormalizeOptionalText(string? value, int maxLength, string field)
@@ -715,32 +773,59 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         return normalizedValue;
     }
 
-    private static string? NormalizeCoatings(List<string>? coatings)
+    private static IReadOnlyList<string> NormalizeCoatings(IReadOnlyCollection<string>? coatings)
+    {
+        if (coatings is null || coatings.Count == 0)
+        {
+            return [];
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalizedValues = coatings
+            .Select(NormalizeText)
+            .Where(value => value is not null)
+            .Cast<string>()
+            .Where(seen.Add)
+            .ToList();
+
+        if (normalizedValues.Count == 0)
+        {
+            return [];
+        }
+
+        _ = SerializeCoatings(normalizedValues);
+        return normalizedValues;
+    }
+
+    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
     {
         if (coatings is null || coatings.Count == 0)
         {
             return null;
         }
 
-        var normalizedValues = coatings
-            .Select(NormalizeText)
-            .Where(value => value is not null)
-            .Cast<string>()
-            .ToList();
-
-        if (normalizedValues.Count == 0)
-        {
-            return null;
-        }
-
-        var serializedCoatings = string.Join(",", normalizedValues);
-
+        var serializedCoatings = string.Join(",", coatings);
         if (serializedCoatings.Length > 500)
         {
             throw CreateInvalidPrescriptionException("coatings", "coatings must not exceed 500 characters");
         }
 
         return serializedCoatings;
+    }
+
+    private static string? NormalizePrescriptionImageReference(string? value, string field)
+    {
+        var normalizedValue = NormalizeOptionalText(value, 500, field);
+
+        if (normalizedValue is not null
+            && normalizedValue.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw CreateInvalidPrescriptionException(
+                field,
+                $"{field} must be an uploaded image URL/path, not raw image data");
+        }
+
+        return normalizedValue;
     }
 
     private static List<string> DeserializeCoatings(string? coatings)
@@ -761,13 +846,18 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
 
         return normalizedValue switch
         {
+            null => OrderType.Ready,
             "ready" => OrderType.Ready,
             "preorder" => OrderType.PreOrder,
             _ => throw CreateInvalidCartItemException("orderType", "orderType must be 'ready' or 'preOrder'")
         };
     }
 
-    private static void ValidateStandardOrderRequest(ProductVariant variant, OrderType orderType, int quantity)
+    private static void ValidateStandardOrderRequest(
+        ProductVariant variant,
+        OrderType orderType,
+        int quantity,
+        bool requireReadyStock = true)
     {
         if (variant.Inventory is null)
         {
@@ -776,18 +866,28 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
                 "variantId must reference a variant with inventory configured");
         }
 
-        if (orderType == OrderType.Ready && variant.Inventory.Quantity < quantity)
+        if (orderType == OrderType.Ready && requireReadyStock && variant.Inventory.Quantity < quantity)
         {
             throw CreateInvalidCartItemException(
                 "quantity",
                 $"Only {variant.Inventory.Quantity} item(s) are currently available for ready order");
         }
 
-        if (orderType == OrderType.PreOrder && !variant.Inventory.IsPreOrderAllowed)
+        if (orderType == OrderType.PreOrder)
         {
-            throw CreateInvalidCartItemException(
-                "orderType",
-                "preOrder is not allowed for this variant");
+            if (!variant.Inventory.IsPreOrderAllowed)
+            {
+                throw CreateInvalidCartItemException(
+                    "orderType",
+                    "preOrder is not allowed for this variant");
+            }
+
+            if (variant.Inventory.Quantity >= quantity)
+            {
+                throw CreateInvalidCartItemException(
+                    "orderType",
+                    "preOrder is only allowed when ready stock is insufficient");
+            }
         }
     }
 
@@ -852,7 +952,7 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         int Quantity,
         int LensTypeId,
         string? LensMaterial,
-        string? Coatings,
+        IReadOnlyList<string> Coatings,
         decimal RightSph,
         decimal RightCyl,
         int RightAxis,
@@ -862,11 +962,4 @@ public class CartService(IUnitOfWork unitOfWork) : ICartService
         decimal Pd,
         string? Notes,
         string? PrescriptionImageUrl);
-
-    private sealed record PrescriptionPricing(
-        decimal FramePricePerUnit,
-        decimal LensBasePrice,
-        decimal CoatingPricePerUnit,
-        decimal LensPricePerUnit,
-        decimal TotalPrice);
 }

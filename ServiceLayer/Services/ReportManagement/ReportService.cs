@@ -149,6 +149,100 @@ public class ReportService(IUnitOfWork unitOfWork) : IReportService
         };
     }
 
+    // Dashboard biểu đồ theo mốc thời gian (1 tuần, 1 tháng, 6 tháng, 1 năm)
+    public async Task<DashboardChartResponse> GetDashboardChartAsync(string timeRange, CancellationToken cancellationToken = default)
+    {
+        var orderRepository = _unitOfWork.Repository<Order>();
+        var now = DateTime.UtcNow;
+        DateTime startDate;
+        var items = new List<DashboardChartItem>();
+
+        switch (timeRange.ToLowerInvariant())
+        {
+            case "week":
+                startDate = now.AddDays(-6).Date; // 7 ngày bao gồm hôm nay
+                break;
+            case "month":
+                startDate = now.AddDays(-29).Date; // 30 ngày bao gồm hôm nay
+                break;
+            case "6months":
+                startDate = new DateTime(now.Year, now.Month, 1).AddMonths(-5);
+                break;
+            case "year":
+                startDate = new DateTime(now.Year, now.Month, 1).AddMonths(-11);
+                break;
+            default:
+                startDate = new DateTime(now.Year, now.Month, 1).AddMonths(-11);
+                timeRange = "year";
+                break;
+        }
+
+        var orders = await orderRepository.FindAsync(
+            filter: o => o.CreatedAt >= startDate && o.CreatedAt <= now,
+            tracked: false);
+
+        var orderList = orders.ToList();
+
+        if (timeRange == "week")
+        {
+            // Nhóm theo ngày (7 ngày)
+            int days = (now.Date - startDate).Days;
+            for (int i = 0; i <= days; i++)
+            {
+                var date = startDate.AddDays(i);
+                var periodOrders = orderList.Where(o => o.CreatedAt.Date == date).ToList();
+                items.Add(new DashboardChartItem
+                {
+                    Period = date.ToString("dd/MM"),
+                    TotalOrders = periodOrders.Count,
+                    CompletedOrders = periodOrders.Count(o => o.OrderStatus == OrderStatus.Completed),
+                    Revenue = periodOrders.Where(o => o.OrderStatus == OrderStatus.Completed).Sum(o => o.TotalAmount)
+                });
+            }
+        }
+        else if (timeRange == "month")
+        {
+            // Nhóm theo tuần trong khoảng 30 ngày
+            var weeks = new List<int>();
+            for (int i = 0; i <= (now.Date - startDate).Days; i++)
+            {
+                int w = GetIso8601WeekOfYear(startDate.AddDays(i));
+                if (!weeks.Contains(w)) weeks.Add(w);
+            }
+
+            foreach (var w in weeks)
+            {
+                var periodOrders = orderList.Where(o => GetIso8601WeekOfYear(o.CreatedAt) == w).ToList();
+                items.Add(new DashboardChartItem
+                {
+                    Period = $"Tuần {w}",
+                    TotalOrders = periodOrders.Count,
+                    CompletedOrders = periodOrders.Count(o => o.OrderStatus == OrderStatus.Completed),
+                    Revenue = periodOrders.Where(o => o.OrderStatus == OrderStatus.Completed).Sum(o => o.TotalAmount)
+                });
+            }
+        }
+        else
+        {
+            // Nhóm theo tháng (6 tháng hoặc 1 năm)
+            int months = timeRange == "6months" ? 6 : 12;
+            for (int i = 0; i < months; i++)
+            {
+                var monthDate = startDate.AddMonths(i);
+                var periodOrders = orderList.Where(o => o.CreatedAt.Year == monthDate.Year && o.CreatedAt.Month == monthDate.Month).ToList();
+                items.Add(new DashboardChartItem
+                {
+                    Period = $"Tháng {monthDate.Month}",
+                    TotalOrders = periodOrders.Count,
+                    CompletedOrders = periodOrders.Count(o => o.OrderStatus == OrderStatus.Completed),
+                    Revenue = periodOrders.Where(o => o.OrderStatus == OrderStatus.Completed).Sum(o => o.TotalAmount)
+                });
+            }
+        }
+
+        return new DashboardChartResponse { Items = items };
+    }
+
     // Helper: tạo filter Expression lọc Order theo khoảng thời gian CreatedAt
     private static System.Linq.Expressions.Expression<Func<Order, bool>>? BuildDateFilter(DateTime? startDate, DateTime? endDate)
     {

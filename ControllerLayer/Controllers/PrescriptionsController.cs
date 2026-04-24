@@ -7,13 +7,13 @@ using ServiceLayer.Exceptions;
 
 namespace ControllerLayer.Controllers;
 
-[Authorize(Roles = "Staff,Admin")]
 [Route("api/prescriptions")]
 [ApiController]
 public class PrescriptionsController(IPrescriptionService prescriptionService) : ApiControllerBase
 {
     private readonly IPrescriptionService _prescriptionService = prescriptionService;
 
+    [Authorize(Roles = "Staff,Admin")]
     [HttpGet]
     public async Task<ActionResult> GetPrescriptions(
         [FromQuery] GetPrescriptionsRequest request,
@@ -30,6 +30,7 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
         }
     }
 
+    [Authorize(Roles = "Staff,Admin")]
     [HttpGet("{prescriptionId:int}")]
     public async Task<ActionResult<PrescriptionDetailResponse>> GetPrescriptionById(
         int prescriptionId,
@@ -52,6 +53,7 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
         }
     }
 
+    [Authorize(Roles = "Staff,Admin")]
     [HttpPatch("{prescriptionId:int}/review")]
     public async Task<ActionResult<PrescriptionStatusResponse>> ReviewPrescription(
         int prescriptionId,
@@ -74,6 +76,7 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
         }
     }
 
+    [Authorize(Roles = "Staff,Admin")]
     [HttpPatch("{prescriptionId:int}/request-more-info")]
     public async Task<ActionResult<PrescriptionStatusResponse>> RequestMoreInfo(
         int prescriptionId,
@@ -88,6 +91,29 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
         try
         {
             var result = await _prescriptionService.RequestMoreInfoAsync(userId, prescriptionId, request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
+    }
+
+    [Authorize(Roles = "Customer")]
+    [HttpPatch("{prescriptionId:int}/resubmit")]
+    public async Task<ActionResult<PrescriptionStatusResponse>> ResubmitPrescription(
+        int prescriptionId,
+        [FromBody] ResubmitPrescriptionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized(new { errorCode = "UNAUTHORIZED", message = "Authentication required" });
+        }
+
+        try
+        {
+            var result = await _prescriptionService.ResubmitPrescriptionAsync(userId, prescriptionId, request, cancellationToken);
             return Ok(result);
         }
         catch (ApiException exception)

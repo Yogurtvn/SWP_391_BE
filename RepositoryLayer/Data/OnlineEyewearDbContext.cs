@@ -4,6 +4,7 @@ using RepositoryLayer.Enums;
 
 namespace RepositoryLayer.Data;
 
+
 public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> options) : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
@@ -13,6 +14,8 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
     public DbSet<Product> Products => Set<Product>();
 
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+
+    public DbSet<Promotion> Promotions => Set<Promotion>();
 
     public DbSet<ProductImage> ProductImages => Set<ProductImage>();
 
@@ -44,6 +47,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        ConfigurePromotions(modelBuilder);
         ConfigureUsers(modelBuilder);
         ConfigureCatalog(modelBuilder);
         ConfigureInventory(modelBuilder);
@@ -109,6 +113,10 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.ItemType).HasColumnType("tinyint");
             entity.Property(x => x.OrderType).HasColumnType("tinyint");
             entity.Property(x => x.SelectedColor).HasMaxLength(50);
+            entity.Property(x => x.OriginalUnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.DiscountPercent).HasPrecision(5, 2).HasDefaultValue(0m);
+            entity.Property(x => x.DiscountAmount).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.FinalUnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.UnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.TotalPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
@@ -142,6 +150,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.LensMaterial).HasMaxLength(50);
             entity.Property(x => x.Coatings).HasMaxLength(500);
             entity.Property(x => x.LensBasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.MaterialPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.CoatingPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.TotalLensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.SphLeft).HasColumnName("SPH_Left").HasPrecision(5, 2);
@@ -182,6 +191,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.LensMaterial).HasMaxLength(50);
             entity.Property(x => x.Coatings).HasMaxLength(500);
             entity.Property(x => x.LensBasePrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.MaterialPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.CoatingPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.TotalLensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.SphLeft).HasColumnName("SPH_Left").HasPrecision(5, 2);
@@ -266,6 +276,11 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
                 .WithMany(x => x.Variants)
                 .HasForeignKey(x => x.ProductId)
                 .OnDelete(DeleteBehavior.NoAction);
+
+            entity.HasOne(x => x.Promotion)
+                .WithMany(x => x.Variants)
+                .HasForeignKey(x => x.PromotionId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<ProductImage>(entity =>
@@ -394,7 +409,12 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.HasKey(x => x.OrderItemId);
 
             entity.Property(x => x.SelectedColor).HasMaxLength(50);
+            entity.Property(x => x.OriginalUnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.DiscountPercent).HasPrecision(5, 2).HasDefaultValue(0m);
+            entity.Property(x => x.DiscountAmount).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.FinalUnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.UnitPrice).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.PromotionNameSnapshot).HasMaxLength(255);
             entity.Property(x => x.LensPrice).HasPrecision(10, 2).HasDefaultValue(0m);
 
             entity.HasOne(x => x.Order)
@@ -495,6 +515,28 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
             entity.Property(x => x.Title).HasMaxLength(255).IsRequired();
             entity.Property(x => x.Content).IsRequired();
+            entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
+            entity.Property(x => x.UpdatedAt).HasDefaultValueSql("GETDATE()");
+        });
+    }
+
+    private static void ConfigurePromotions(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Promotion>(entity =>
+        {
+            entity.ToTable("Promotions", table =>
+            {
+                table.HasCheckConstraint("CK_Promotions_DiscountPercent", "[DiscountPercent] > 0 AND [DiscountPercent] <= 100");
+            });
+
+            entity.HasKey(x => x.PromotionId);
+
+            entity.Property(x => x.Name).HasMaxLength(255).IsRequired();
+            entity.Property(x => x.Description).HasMaxLength(1000);
+            entity.Property(x => x.DiscountPercent).HasPrecision(5, 2).IsRequired();
+            entity.Property(x => x.StartAt).IsRequired();
+            entity.Property(x => x.EndAt).IsRequired();
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("GETDATE()");
             entity.Property(x => x.UpdatedAt).HasDefaultValueSql("GETDATE()");
         });

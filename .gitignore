@@ -36,3 +36,4 @@ Thumbs.db
 
 .tmp_inspectpayos/
 artifacts/
+.tmp_build_diag.txt

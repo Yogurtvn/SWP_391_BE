@@ -55,9 +55,37 @@ public class OrderItemResponse
 
     public int Quantity { get; set; }
 
+    public int StockQuantity { get; set; }
+
+    public bool IsReadyAvailable { get; set; }
+
+    public bool IsPreOrderAllowed { get; set; }
+
+    public DateTime? ExpectedRestockDate { get; set; }
+
+    public string? PreOrderNote { get; set; }
+
     public decimal UnitPrice { get; set; }
 
+    public decimal OriginalUnitPrice { get; set; }
+
+    public decimal DiscountPercent { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
+    public decimal FinalUnitPrice { get; set; }
+
+    public string? PromotionNameSnapshot { get; set; }
+
     public decimal LineTotal { get; set; }
+
+    public int? LensTypeId { get; set; }
+
+    public decimal? LensPrice { get; set; }
+
+    public int? PrescriptionId { get; set; }
+
+    public OrderItemPrescriptionResponse? Prescription { get; set; }
 }
 
 public class OrderPaymentResponse

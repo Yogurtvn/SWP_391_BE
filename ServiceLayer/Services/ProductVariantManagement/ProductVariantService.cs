@@ -1,18 +1,23 @@
 using RepositoryLayer.Common;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.ProductVariant;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.ProductVariant.Request;
 using ServiceLayer.DTOs.ProductVariant.Response;
 using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
 using System.Net;
 
 namespace ServiceLayer.Services.ProductVariantManagement;
 
-public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantService
+public class ProductVariantService(
+    IUnitOfWork unitOfWork,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IProductVariantService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<PagedResult<ProductVariantListItemResponse>> GetVariantsByProductAsync(
         int productId,
@@ -46,12 +51,13 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
                 (normalizedSize == null || (variant.Size != null && variant.Size.Contains(normalizedSize))) &&
                 (normalizedFrameType == null || (variant.FrameType != null && variant.FrameType.Contains(normalizedFrameType))),
             orderBy: query => ApplyOrdering(query, sortBy, sortDescending),
-            includeProperties: "Inventory",
+            includeProperties: "Inventory,Promotion",
             tracked: false,
             cancellationToken: cancellationToken);
+        var now = DateTime.UtcNow;
 
         var items = pagedVariants.Items
-            .Select(MapToListItem)
+            .Select(variant => MapToListItem(variant, now))
             .ToList();
 
         return PagedResult<ProductVariantListItemResponse>.Create(
@@ -71,10 +77,10 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
             variantEntity =>
                 variantEntity.VariantId == variantId
                 && (includeInactive || (variantEntity.IsActive && variantEntity.Product.IsActive)),
-            includeProperties: "Inventory,Product",
+            includeProperties: "Inventory,Product,Promotion",
             tracked: false);
 
-        return variant is null ? null : MapToDetail(variant);
+        return variant is null ? null : MapToDetail(variant, DateTime.UtcNow);
     }
 
     public async Task<ProductVariantIdResponse> CreateVariantAsync(
@@ -147,6 +153,7 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
         variant.Size = NormalizeText(request.Size);
         variant.Color = NormalizeText(request.Color);
         variant.Price = request.Price;
+        var previousQuantity = variant.Inventory?.Quantity ?? 0;
 
         var inventory = variant.Inventory;
         if (inventory is null)
@@ -163,6 +170,14 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
 
         variantRepository.Update(variant);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        var currentQuantity = inventory.Quantity;
+
+        await _backInStockNotificationService.HandleStockChangeAsync(
+            variantId,
+            previousQuantity,
+            currentQuantity,
+            source: "variant:update",
+            cancellationToken);
 
         return new MessageResponse
         {
@@ -274,8 +289,10 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
         }
     }
 
-    private static ProductVariantListItemResponse MapToListItem(ProductVariant variant)
+    private static ProductVariantListItemResponse MapToListItem(ProductVariant variant, DateTime currentTime)
     {
+        var pricing = PromotionPricingHelper.Calculate(variant, currentTime);
+
         return new ProductVariantListItemResponse
         {
             VariantId = variant.VariantId,
@@ -283,13 +300,22 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
             Color = variant.Color,
             Size = variant.Size,
             Price = variant.Price,
+            OriginalPrice = pricing.OriginalPrice,
+            DiscountPercent = pricing.DiscountPercent,
+            DiscountAmount = pricing.DiscountAmount,
+            FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
-            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false
+            IsReadyAvailable = (variant.Inventory?.Quantity ?? 0) > 0,
+            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = variant.Inventory?.PreOrderNote
         };
     }
 
-    private static ProductVariantDetailResponse MapToDetail(ProductVariant variant)
+    private static ProductVariantDetailResponse MapToDetail(ProductVariant variant, DateTime currentTime)
     {
+        var pricing = PromotionPricingHelper.Calculate(variant, currentTime);
+
         return new ProductVariantDetailResponse
         {
             VariantId = variant.VariantId,
@@ -298,9 +324,15 @@ public class ProductVariantService(IUnitOfWork unitOfWork) : IProductVariantServ
             Size = variant.Size,
             FrameType = variant.FrameType,
             Price = variant.Price,
+            OriginalPrice = pricing.OriginalPrice,
+            DiscountPercent = pricing.DiscountPercent,
+            DiscountAmount = pricing.DiscountAmount,
+            FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
+            IsReadyAvailable = (variant.Inventory?.Quantity ?? 0) > 0,
             IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
-            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate
+            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = variant.Inventory?.PreOrderNote
         };
     }
 

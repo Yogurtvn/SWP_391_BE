@@ -14,9 +14,21 @@ public class ProductVariantDetailResponse
 
     public decimal Price { get; set; }
 
+    public decimal OriginalPrice { get; set; }
+
+    public decimal DiscountPercent { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
+    public decimal FinalPrice { get; set; }
+
     public int Quantity { get; set; }
+
+    public bool IsReadyAvailable { get; set; }
 
     public bool IsPreOrderAllowed { get; set; }
 
     public DateTime? ExpectedRestockDate { get; set; }
+
+    public string? PreOrderNote { get; set; }
 }

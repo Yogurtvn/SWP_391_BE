@@ -1,15 +1,19 @@
 using RepositoryLayer.Common;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.StockReceipt;
 using ServiceLayer.DTOs.StockReceipt.Request;
 using ServiceLayer.DTOs.StockReceipt.Response;
 
 namespace ServiceLayer.Services.StockReceiptManagement;
 
-public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
+public class StockReceiptService(
+    IUnitOfWork unitOfWork,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IStockReceiptService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<StockReceiptDtoResponse> CreateStockReceiptAsync(
         CreateStockReceiptRequest request,
@@ -22,6 +26,9 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
         var inventoryRepository = _unitOfWork.Repository<Inventory>();
         var receiptRepository = _unitOfWork.Repository<RepositoryLayer.Entities.StockReceipt>();
         var now = DateTime.UtcNow;
+        var previousQuantity = 0;
+        var currentQuantity = 0;
+        RepositoryLayer.Entities.StockReceipt? stockReceipt = null;
 
         try
         {
@@ -52,9 +59,11 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
                 variant.Inventory = inventory;
             }
 
+            previousQuantity = inventory.Quantity;
             inventory.Quantity += request.QuantityReceived;
+            currentQuantity = inventory.Quantity;
 
-            var stockReceipt = new RepositoryLayer.Entities.StockReceipt
+            stockReceipt = new RepositoryLayer.Entities.StockReceipt
             {
                 VariantId = request.VariantId,
                 QuantityReceived = request.QuantityReceived,
@@ -66,14 +75,21 @@ public class StockReceiptService(IUnitOfWork unitOfWork) : IStockReceiptService
             await receiptRepository.AddAsync(stockReceipt);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
-
-            return MapToDto(stockReceipt);
         }
         catch
         {
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
+
+        await _backInStockNotificationService.HandleStockChangeAsync(
+            request.VariantId,
+            previousQuantity,
+            currentQuantity,
+            source: "stock-receipt:create",
+            cancellationToken);
+
+        return MapToDto(stockReceipt!);
     }
 
     public async Task<PagedResult<StockReceiptListDtoResponse>> GetStockReceiptsAsync(

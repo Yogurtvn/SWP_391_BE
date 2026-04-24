@@ -4,6 +4,8 @@ public class CheckoutOrderResponse
 {
     public int OrderId { get; set; }
 
+    public string OrderType { get; set; } = string.Empty;
+
     public decimal TotalAmount { get; set; }
 
     public string OrderStatus { get; set; } = string.Empty;

@@ -2,6 +2,7 @@ using ControllerLayer.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ServiceLayer.Contracts.ProductImage;
+using ServiceLayer.Contracts.Storage;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.ProductImage.Request;
 using ServiceLayer.DTOs.ProductImage.Response;
@@ -13,10 +14,10 @@ namespace ControllerLayer.Controllers;
 [ApiController]
 public class ProductImagesController(
     IProductImageService productImageService,
-    IWebHostEnvironment environment) : ApiControllerBase
+    IImageStorageService imageStorageService) : ApiControllerBase
 {
     private readonly IProductImageService _productImageService = productImageService;
-    private readonly IWebHostEnvironment _environment = environment;
+    private readonly IImageStorageService _imageStorageService = imageStorageService;
 
     [AllowAnonymous]
     [HttpGet]
@@ -54,7 +55,7 @@ public class ProductImagesController(
             });
         }
 
-        var savedImageUrls = new List<string>();
+        var uploadedImages = new List<UploadedImage>();
 
         try
         {
@@ -62,7 +63,7 @@ public class ProductImagesController(
             {
                 if (file.Length <= 0)
                 {
-                    DeleteSavedFiles(savedImageUrls);
+                    await DeleteSavedFilesAsync(uploadedImages);
                     return BadRequest(new
                     {
                         errorCode = "VALIDATION_ERROR",
@@ -73,7 +74,7 @@ public class ProductImagesController(
 
                 if (!string.IsNullOrWhiteSpace(file.ContentType) && !file.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                 {
-                    DeleteSavedFiles(savedImageUrls);
+                    await DeleteSavedFilesAsync(uploadedImages);
                     return BadRequest(new
                     {
                         errorCode = "VALIDATION_ERROR",
@@ -82,21 +83,23 @@ public class ProductImagesController(
                     });
                 }
 
-                savedImageUrls.Add(await SaveFileAsync(productId, file, cancellationToken));
+                uploadedImages.Add(await SaveFileAsync(productId, file, cancellationToken));
             }
 
-            // TODO: replace local-disk storage once the final storage strategy is defined in API_SPEC.md.
-            var result = await _productImageService.UploadImagesAsync(productId, savedImageUrls, cancellationToken);
+            var result = await _productImageService.UploadImagesAsync(
+                productId,
+                uploadedImages.Select(image => image.Url).ToList(),
+                cancellationToken);
             return Ok(result);
         }
         catch (ApiException exception)
         {
-            DeleteSavedFiles(savedImageUrls);
+            await DeleteSavedFilesAsync(uploadedImages);
             return ApiError(exception);
         }
         catch
         {
-            DeleteSavedFiles(savedImageUrls);
+            await DeleteSavedFilesAsync(uploadedImages);
             throw;
         }
     }
@@ -130,7 +133,7 @@ public class ProductImagesController(
         try
         {
             var result = await _productImageService.DeleteImageAsync(productId, imageId, cancellationToken);
-            DeleteFile(result.ImageUrl);
+            await DeleteFileAsync(result.ImageUrl, cancellationToken);
             return Ok(new MessageResponse
             {
                 Message = result.Message
@@ -142,47 +145,46 @@ public class ProductImagesController(
         }
     }
 
-    private async Task<string> SaveFileAsync(int productId, IFormFile file, CancellationToken cancellationToken)
+    private async Task<UploadedImage> SaveFileAsync(int productId, IFormFile file, CancellationToken cancellationToken)
     {
-        var uploadsDirectory = GetProductUploadsDirectory(productId);
-        Directory.CreateDirectory(uploadsDirectory);
-
         var originalExtension = Path.GetExtension(file.FileName);
         var safeExtension = string.IsNullOrWhiteSpace(originalExtension) ? ".bin" : originalExtension;
         var fileName = $"{Guid.NewGuid():N}{safeExtension}";
-        var physicalPath = Path.Combine(uploadsDirectory, fileName);
 
-        await using var stream = new FileStream(physicalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        await file.CopyToAsync(stream, cancellationToken);
+        await using var stream = file.OpenReadStream();
+        var uploadResult = await _imageStorageService.UploadImageAsync(
+            stream,
+            fileName,
+            GetProductFolder(productId),
+            cancellationToken);
 
-        return $"/uploads/products/{productId}/{fileName}";
+        return new UploadedImage(uploadResult.Url, uploadResult.PublicId);
     }
 
-    private void DeleteSavedFiles(IEnumerable<string> imageUrls)
+    private async Task DeleteSavedFilesAsync(IEnumerable<UploadedImage> uploadedImages)
     {
-        foreach (var imageUrl in imageUrls)
+        foreach (var uploadedImage in uploadedImages)
         {
-            DeleteFile(imageUrl);
+            try
+            {
+                await _imageStorageService.DeleteByPublicIdAsync(uploadedImage.PublicId, CancellationToken.None);
+            }
+            catch
+            {
+                // best-effort cleanup
+            }
         }
     }
 
-    private void DeleteFile(string imageUrl)
+    private Task DeleteFileAsync(string imageUrl, CancellationToken cancellationToken)
     {
-        var physicalPath = Path.Combine(GetUploadsRootPath(), imageUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-
-        if (System.IO.File.Exists(physicalPath))
-        {
-            System.IO.File.Delete(physicalPath);
-        }
+        return _imageStorageService.DeleteByUrlAsync(imageUrl, cancellationToken);
     }
 
-    private string GetProductUploadsDirectory(int productId)
+    private static string GetProductFolder(int productId)
     {
-        return Path.Combine(GetUploadsRootPath(), "uploads", "products", productId.ToString());
+        return $"products/{productId}";
     }
 
-    private string GetUploadsRootPath()
-    {
-        return _environment.WebRootPath ?? Path.Combine(_environment.ContentRootPath, "wwwroot");
-    }
+    private sealed record UploadedImage(string Url, string PublicId);
 }

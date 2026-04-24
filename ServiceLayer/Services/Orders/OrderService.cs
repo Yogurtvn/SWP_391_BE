@@ -4,8 +4,10 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Payment;
+using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.Common;
 using ServiceLayer.DTOs.Orders;
 using ServiceLayer.DTOs.Payment.Response;
@@ -18,7 +20,9 @@ namespace ServiceLayer.Services.Orders;
 public class OrderService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IPaymentService paymentService) : IOrderService
+    IPaymentService paymentService,
+    IPrescriptionPricingService prescriptionPricingService,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses =
     [
@@ -45,6 +49,7 @@ public class OrderService(
         [OrderStatus.AwaitingStock] =
         [
             OrderStatus.Confirmed,
+            OrderStatus.Processing,
             OrderStatus.Cancelled
         ],
         [OrderStatus.Processing] =
@@ -63,6 +68,9 @@ public class OrderService(
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPaymentService _paymentService = paymentService;
+    private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
+    private readonly record struct InventoryQuantityTransition(int VariantId, int PreviousQuantity, int CurrentQuantity);
 
     public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
@@ -74,6 +82,7 @@ public class OrderService(
         var receiverName = NormalizeRequiredText(request.ReceiverName, "receiverName");
         var receiverPhone = NormalizeRequiredText(request.ReceiverPhone, "receiverPhone");
         var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "shippingAddress");
+        var shippingFee = NormalizeMoney(request.ShippingFee, "shippingFee");
         var paymentMethod = ParsePaymentMethod(request.PaymentMethod);
         var cartItemIds = PrepareCartItemIds(request.CartItemIds);
         var now = DateTime.UtcNow;
@@ -84,6 +93,8 @@ public class OrderService(
                 .ThenInclude(variant => variant.Product)
             .Include(item => item.Variant)
                 .ThenInclude(variant => variant.Inventory)
+            .Include(item => item.Variant)
+                .ThenInclude(variant => variant.Promotion)
             .Include(item => item.CartPrescriptionDetail)
                 .ThenInclude(detail => detail!.LensType)
             .Where(item => cartItemIds.Contains(item.CartItemId) && item.Cart.UserId == userId)
@@ -95,7 +106,8 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
         }
 
-        var orderType = ResolveCheckoutOrderType(cartItems);
+        var requestedOrderType = ParseCheckoutOrderType(request.OrderType);
+        var orderType = ResolveCheckoutOrderType(cartItems, requestedOrderType);
         var orderItems = BuildCheckoutOrderItems(userId, cartItems, orderType, now);
         var result = await CreateOrderAsync(
             userId,
@@ -105,6 +117,7 @@ public class OrderService(
             shippingAddress,
             paymentMethod,
             orderItems,
+            shippingFee,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cartItemsToRemove: cartItems,
@@ -113,6 +126,7 @@ public class OrderService(
         return new CheckoutOrderResponse
         {
             OrderId = result.Order.OrderId,
+            OrderType = ApiEnumMapper.ToApiOrderType(result.Order.OrderType),
             TotalAmount = result.Order.TotalAmount,
             OrderStatus = ApiEnumMapper.ToApiOrderStatus(result.Order.OrderStatus),
             Payment = MapCheckoutPayment(result.Payment, result.PaymentAction)
@@ -145,6 +159,7 @@ public class OrderService(
         var variant = await _dbContext.ProductVariants
             .Include(item => item.Product)
             .Include(item => item.Inventory)
+            .Include(item => item.Promotion)
             .FirstOrDefaultAsync(
                 item => item.VariantId == request.VariantId,
                 cancellationToken);
@@ -159,6 +174,8 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Selected variant is out of stock");
         }
 
+        var pricing = PromotionPricingHelper.Calculate(variant, now);
+
         var result = await CreateOrderAsync(
             userId,
             OrderType.Ready,
@@ -172,11 +189,17 @@ public class OrderService(
                     Variant = variant,
                     Quantity = request.Quantity,
                     SelectedColor = NormalizeText(variant.Color),
-                    UnitPrice = variant.Price,
-                    LineTotal = variant.Price * request.Quantity,
+                    OriginalUnitPrice = pricing.OriginalPrice,
+                    DiscountPercent = pricing.DiscountPercent,
+                    DiscountAmount = pricing.DiscountAmount,
+                    FinalUnitPrice = pricing.FinalPrice,
+                    UnitPrice = pricing.FinalPrice,
+                    PromotionNameSnapshot = pricing.PromotionName,
+                    LineTotal = pricing.FinalPrice * request.Quantity,
                     ReserveInventory = true
                 }
             ],
+            shippingFee: 0m,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cancellationToken: cancellationToken);
@@ -278,6 +301,9 @@ public class OrderService(
                 .ThenInclude(item => item.Variant)
                     .ThenInclude(variant => variant.Product)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
                 .ThenInclude(item => item.LensType)
             .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Prescription)
@@ -331,11 +357,12 @@ public class OrderService(
         }
 
         var note = NormalizeText(request.Reason);
+        IReadOnlyCollection<InventoryQuantityTransition> inventoryTransitions = Array.Empty<InventoryQuantityTransition>();
 
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
-            await CancelOrderInternalAsync(order, userId, note ?? "Order cancelled by customer.", cancellationToken);
+            inventoryTransitions = await CancelOrderInternalAsync(order, userId, note ?? "Order cancelled by customer.", cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
         catch
@@ -343,6 +370,8 @@ public class OrderService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "order:cancel", cancellationToken);
 
         return new OrderCancelResponse
         {
@@ -404,6 +433,10 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
@@ -420,9 +453,21 @@ public class OrderService(
                     OrderItemId = item.OrderItemId,
                     VariantId = item.VariantId,
                     Quantity = item.Quantity,
+                    StockQuantity = item.Variant.Inventory?.Quantity ?? 0,
+                    IsReadyAvailable = (item.Variant.Inventory?.Quantity ?? 0) >= item.Quantity,
+                    IsPreOrderAllowed = item.Variant.Inventory?.IsPreOrderAllowed ?? false,
+                    ExpectedRestockDate = item.Variant.Inventory?.ExpectedRestockDate,
+                    PreOrderNote = item.Variant.Inventory?.PreOrderNote,
                     UnitPrice = item.UnitPrice,
+                    OriginalUnitPrice = item.OriginalUnitPrice,
+                    DiscountPercent = item.DiscountPercent,
+                    DiscountAmount = item.DiscountAmount,
+                    FinalUnitPrice = item.FinalUnitPrice,
+                    PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
-                    LensPrice = item.LensPrice
+                    LensPrice = item.LensPrice,
+                    PrescriptionId = item.PrescriptionId,
+                    Prescription = MapOrderItemPrescription(item.Prescription)
                 })
                 .ToList()
         };
@@ -437,6 +482,10 @@ public class OrderService(
     {
         var order = await GetAccessibleOrderQuery(currentUserId, canAccessAllOrders, tracked: false)
             .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Variant)
+                    .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .FirstOrDefaultAsync(current => current.OrderId == orderId, cancellationToken);
 
         if (order is null)
@@ -456,10 +505,22 @@ public class OrderService(
             OrderItemId = orderItem.OrderItemId,
             VariantId = orderItem.VariantId,
             Quantity = orderItem.Quantity,
+            StockQuantity = orderItem.Variant.Inventory?.Quantity ?? 0,
+            IsReadyAvailable = (orderItem.Variant.Inventory?.Quantity ?? 0) >= orderItem.Quantity,
+            IsPreOrderAllowed = orderItem.Variant.Inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = orderItem.Variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = orderItem.Variant.Inventory?.PreOrderNote,
             SelectedColor = orderItem.SelectedColor,
             TotalPrice = (orderItem.UnitPrice + (orderItem.LensPrice ?? 0m)) * orderItem.Quantity,
+            OriginalUnitPrice = orderItem.OriginalUnitPrice,
+            DiscountPercent = orderItem.DiscountPercent,
+            DiscountAmount = orderItem.DiscountAmount,
+            FinalUnitPrice = orderItem.FinalUnitPrice,
+            PromotionNameSnapshot = orderItem.PromotionNameSnapshot,
             LensTypeId = orderItem.LensTypeId,
-            LensPrice = orderItem.LensPrice
+            LensPrice = orderItem.LensPrice,
+            PrescriptionId = orderItem.PrescriptionId,
+            Prescription = MapOrderItemPrescription(orderItem.Prescription)
         };
     }
 
@@ -487,6 +548,7 @@ public class OrderService(
         }
 
         ValidateStatusTransition(order.OrderStatus, nextOrderStatus);
+        IReadOnlyCollection<InventoryQuantityTransition> inventoryTransitions = Array.Empty<InventoryQuantityTransition>();
 
         try
         {
@@ -495,7 +557,7 @@ public class OrderService(
             if (nextOrderStatus == OrderStatus.Cancelled)
             {
                 order.StaffId = staffUserId;
-                await CancelOrderInternalAsync(
+                inventoryTransitions = await CancelOrderInternalAsync(
                     order,
                     staffUserId,
                     NormalizeText(request.Note) ?? "Order cancelled by staff.",
@@ -531,6 +593,8 @@ public class OrderService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "order:cancel", cancellationToken);
 
         return new OrderStatusUpdatedResponse
         {
@@ -611,6 +675,7 @@ public class OrderService(
         string shippingAddress,
         PaymentMethod paymentMethod,
         IReadOnlyList<OrderCreationItem> items,
+        decimal shippingFee,
         int createdByUserId,
         bool requestPayOsInitialization,
         IReadOnlyCollection<CartItem>? cartItemsToRemove = null,
@@ -622,11 +687,14 @@ public class OrderService(
         }
 
         var now = DateTime.UtcNow;
+        var initialOrderStatus = orderType == OrderType.PreOrder
+            ? OrderStatus.AwaitingStock
+            : OrderStatus.Pending;
         var order = new Order
         {
             UserId = userId,
             OrderType = orderType,
-            OrderStatus = OrderStatus.Pending,
+            OrderStatus = initialOrderStatus,
             ReceiverName = receiverName,
             ReceiverPhone = receiverPhone,
             ShippingAddress = shippingAddress,
@@ -653,7 +721,7 @@ public class OrderService(
 
         order.OrderStatusHistories.Add(new OrderStatusHistory
         {
-            OrderStatus = OrderStatus.Pending,
+            OrderStatus = initialOrderStatus,
             UpdatedByUserId = createdByUserId,
             Note = "Order created.",
             UpdatedAt = now
@@ -667,9 +735,14 @@ public class OrderService(
             {
                 ValidateOrderVariant(item);
 
-                if (item.RequirePreOrderEnabled && item.Variant.Inventory?.IsPreOrderAllowed != true)
+                if (item.RequirePreOrderEnabled)
                 {
-                    throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    var inventory = item.Variant.Inventory;
+
+                    if (inventory?.IsPreOrderAllowed != true || inventory.Quantity >= item.Quantity)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
                 }
 
                 if (item.ReserveInventory)
@@ -688,13 +761,19 @@ public class OrderService(
                     VariantId = item.Variant.VariantId,
                     Quantity = item.Quantity,
                     SelectedColor = item.SelectedColor,
+                    OriginalUnitPrice = item.OriginalUnitPrice,
+                    DiscountPercent = item.DiscountPercent,
+                    DiscountAmount = item.DiscountAmount,
+                    FinalUnitPrice = item.FinalUnitPrice,
                     UnitPrice = item.UnitPrice,
+                    PromotionNameSnapshot = item.PromotionNameSnapshot,
                     LensTypeId = item.LensTypeId,
                     LensPrice = item.LensPrice,
                     Prescription = item.Prescription
                 });
             }
 
+            order.TotalAmount += shippingFee;
             payment.Amount = order.TotalAmount;
             order.Payments.Add(payment);
 
@@ -747,7 +826,7 @@ public class OrderService(
         return new CreateOrderResult(order, payment, paymentAction);
     }
 
-    private static IReadOnlyList<OrderCreationItem> BuildCheckoutOrderItems(
+    private IReadOnlyList<OrderCreationItem> BuildCheckoutOrderItems(
         int userId,
         IReadOnlyCollection<CartItem> cartItems,
         OrderType orderType,
@@ -762,8 +841,20 @@ public class OrderService(
                     throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
                 }
 
+                var pricing = PromotionPricingHelper.Calculate(item.Variant, now);
+
                 if (orderType == OrderType.Prescription)
                 {
+                    if (item.ItemType != CartItemType.PrescriptionConfigured)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+
+                    if (item.Quantity != 1)
+                    {
+                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                    }
+
                     var detail = item.CartPrescriptionDetail;
 
                     if (detail is null || detail.LensType is null || !detail.LensType.IsActive)
@@ -776,26 +867,43 @@ public class OrderService(
                         throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
                     }
 
+                    ValidatePrescriptionDetail(detail);
+                    var calculatedPricing = _prescriptionPricingService.Calculate(
+                        pricing.FinalPrice,
+                        detail.LensType.Price,
+                        detail.LensMaterial,
+                        DeserializeCoatings(detail.Coatings),
+                        item.Quantity,
+                        errorCode: "CHECKOUT_FAILED",
+                        errorMessage: "Unable to checkout selected items");
+                    var serializedCoatings = SerializeCoatings(calculatedPricing.Coatings);
+
                     return new OrderCreationItem
                     {
                         Variant = item.Variant,
                         Quantity = item.Quantity,
                         SelectedColor = item.SelectedColor,
-                        UnitPrice = item.UnitPrice,
-                        LineTotal = item.TotalPrice,
+                        OriginalUnitPrice = pricing.OriginalPrice,
+                        DiscountPercent = pricing.DiscountPercent,
+                        DiscountAmount = pricing.DiscountAmount,
+                        FinalUnitPrice = pricing.FinalPrice,
+                        UnitPrice = pricing.FinalPrice,
+                        PromotionNameSnapshot = pricing.PromotionName,
+                        LineTotal = calculatedPricing.TotalPrice,
                         ReserveInventory = true,
                         LensTypeId = detail.LensTypeId,
-                        LensPrice = detail.TotalLensPrice,
+                        LensPrice = calculatedPricing.LensPrice,
                         Prescription = new PrescriptionSpec
                         {
                             UserId = userId,
                             LensTypeId = detail.LensTypeId,
-                            LensTypeCode = detail.LensTypeCode,
-                            LensMaterial = detail.LensMaterial,
-                            Coatings = detail.Coatings,
-                            LensBasePrice = detail.LensBasePrice,
-                            CoatingPrice = detail.CoatingPrice,
-                            TotalLensPrice = detail.TotalLensPrice,
+                            LensTypeCode = detail.LensType.LensCode,
+                            LensMaterial = calculatedPricing.LensMaterial,
+                            Coatings = serializedCoatings,
+                            LensBasePrice = calculatedPricing.LensBasePrice,
+                            MaterialPrice = calculatedPricing.MaterialPrice,
+                            CoatingPrice = calculatedPricing.CoatingPrice,
+                            TotalLensPrice = calculatedPricing.LensPrice,
                             SphLeft = detail.SphLeft,
                             SphRight = detail.SphRight,
                             CylLeft = detail.CylLeft,
@@ -803,12 +911,17 @@ public class OrderService(
                             AxisLeft = detail.AxisLeft,
                             AxisRight = detail.AxisRight,
                             Pd = detail.Pd,
-                            PrescriptionImage = detail.PrescriptionImage,
+                            PrescriptionImage = NormalizePrescriptionImageReference(detail.PrescriptionImage),
                             PrescriptionStatus = PrescriptionStatus.Submitted,
-                            Notes = detail.Notes,
+                            Notes = NormalizeOptionalNote(detail.Notes),
                             CreatedAt = now
                         }
                     };
+                }
+
+                if (item.ItemType != CartItemType.Standard)
+                {
+                    throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
                 }
 
                 return new OrderCreationItem
@@ -816,13 +929,98 @@ public class OrderService(
                     Variant = item.Variant,
                     Quantity = item.Quantity,
                     SelectedColor = item.SelectedColor,
-                    UnitPrice = item.UnitPrice,
-                    LineTotal = item.TotalPrice,
+                    OriginalUnitPrice = pricing.OriginalPrice,
+                    DiscountPercent = pricing.DiscountPercent,
+                    DiscountAmount = pricing.DiscountAmount,
+                    FinalUnitPrice = pricing.FinalPrice,
+                    UnitPrice = pricing.FinalPrice,
+                    PromotionNameSnapshot = pricing.PromotionName,
+                    LineTotal = pricing.FinalPrice * item.Quantity,
                     ReserveInventory = orderType == OrderType.Ready,
                     RequirePreOrderEnabled = orderType == OrderType.PreOrder
                 };
             })
             .ToList();
+    }
+
+    private static void ValidatePrescriptionDetail(CartPrescriptionDetail detail)
+    {
+        ValidateAxis(detail.AxisLeft);
+        ValidateAxis(detail.AxisRight);
+
+        if (detail.Pd <= 0)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+    }
+
+    private static void ValidateAxis(int axis)
+    {
+        if (axis is < 0 or > 180)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+    }
+
+    private static IReadOnlyList<string> DeserializeCoatings(string? serializedCoatings)
+    {
+        if (string.IsNullOrWhiteSpace(serializedCoatings))
+        {
+            return [];
+        }
+
+        return serializedCoatings
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
+    {
+        if (coatings is null || coatings.Count == 0)
+        {
+            return null;
+        }
+
+        var serialized = string.Join(",", coatings);
+
+        if (serialized.Length > 500)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return serialized;
+    }
+
+    private static string? NormalizePrescriptionImageReference(string? imageReference)
+    {
+        var normalized = NormalizeText(imageReference);
+
+        if (normalized is not null
+            && normalized.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        if (normalized is not null && normalized.Length > 500)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeOptionalNote(string? note)
+    {
+        var normalized = NormalizeText(note);
+
+        if (normalized is not null && normalized.Length > 255)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+        }
+
+        return normalized;
     }
 
     private static IReadOnlyList<int> PrepareCartItemIds(IReadOnlyCollection<int>? cartItemIds)
@@ -845,8 +1043,13 @@ public class OrderService(
         return preparedIds;
     }
 
-    private static OrderType ResolveCheckoutOrderType(IEnumerable<CartItem> cartItems)
+    private static OrderType ResolveCheckoutOrderType(IEnumerable<CartItem> cartItems, OrderType? requestedOrderType)
     {
+        if (requestedOrderType.HasValue)
+        {
+            return requestedOrderType.Value;
+        }
+
         var distinctOrderTypes = cartItems
             .Select(item => item.OrderType)
             .Distinct()
@@ -860,13 +1063,14 @@ public class OrderService(
         return distinctOrderTypes[0];
     }
 
-    private async Task CancelOrderInternalAsync(
+    private async Task<IReadOnlyCollection<InventoryQuantityTransition>> CancelOrderInternalAsync(
         Order order,
         int updatedByUserId,
         string note,
         CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var inventoryTransitions = new Dictionary<int, InventoryQuantityTransition>();
 
         foreach (var orderItem in order.OrderItems)
         {
@@ -887,7 +1091,21 @@ public class OrderService(
                     orderItem.Variant.Inventory = inventory;
                 }
 
+                var previousQuantity = inventory.Quantity;
                 inventory.Quantity += orderItem.Quantity;
+                var currentQuantity = inventory.Quantity;
+
+                if (inventoryTransitions.TryGetValue(orderItem.VariantId, out var transition))
+                {
+                    inventoryTransitions[orderItem.VariantId] = transition with { CurrentQuantity = currentQuantity };
+                }
+                else
+                {
+                    inventoryTransitions[orderItem.VariantId] = new InventoryQuantityTransition(
+                        orderItem.VariantId,
+                        previousQuantity,
+                        currentQuantity);
+                }
             }
         }
 
@@ -914,6 +1132,23 @@ public class OrderService(
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        return inventoryTransitions.Values.ToArray();
+    }
+
+    private async Task NotifyBackInStockTransitionsAsync(
+        IEnumerable<InventoryQuantityTransition> transitions,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        foreach (var transition in transitions)
+        {
+            await _backInStockNotificationService.HandleStockChangeAsync(
+                transition.VariantId,
+                transition.PreviousQuantity,
+                transition.CurrentQuantity,
+                source,
+                cancellationToken);
+        }
     }
 
     private async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken)
@@ -1060,6 +1295,25 @@ public class OrderService(
         return orderType;
     }
 
+    private static OrderType? ParseCheckoutOrderType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!ApiEnumMapper.TryParseOrderType(value, out var orderType))
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "CHECKOUT_FAILED",
+                "Unable to checkout selected items",
+                new { field = "orderType", issue = "orderType must be 'ready', 'preOrder', or 'prescription'" });
+        }
+
+        return orderType;
+    }
+
     private static OrderStatus ParseOrderStatus(string? value)
     {
         if (!ApiEnumMapper.TryParseOrderStatus(value, out var orderStatus))
@@ -1118,6 +1372,16 @@ public class OrderService(
     {
         var normalizedValue = value?.Trim();
         return string.IsNullOrWhiteSpace(normalizedValue) ? null : normalizedValue;
+    }
+
+    private static decimal NormalizeMoney(decimal value, string field)
+    {
+        if (value < 0m)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_REQUEST", $"{field} cannot be negative");
+        }
+
+        return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     }
 
     private static string? NormalizeSortField(string? value)
@@ -1199,8 +1463,22 @@ public class OrderService(
                     VariantColor = item.Variant.Color,
                     SelectedColor = item.SelectedColor,
                     Quantity = item.Quantity,
+                    StockQuantity = item.Variant.Inventory?.Quantity ?? 0,
+                    IsReadyAvailable = (item.Variant.Inventory?.Quantity ?? 0) >= item.Quantity,
+                    IsPreOrderAllowed = item.Variant.Inventory?.IsPreOrderAllowed ?? false,
+                    ExpectedRestockDate = item.Variant.Inventory?.ExpectedRestockDate,
+                    PreOrderNote = item.Variant.Inventory?.PreOrderNote,
+                    OriginalUnitPrice = item.OriginalUnitPrice,
+                    DiscountPercent = item.DiscountPercent,
+                    DiscountAmount = item.DiscountAmount,
+                    FinalUnitPrice = item.FinalUnitPrice,
                     UnitPrice = item.UnitPrice,
-                    LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity
+                    PromotionNameSnapshot = item.PromotionNameSnapshot,
+                    LineTotal = (item.UnitPrice + (item.LensPrice ?? 0m)) * item.Quantity,
+                    LensTypeId = item.LensTypeId,
+                    LensPrice = item.LensPrice,
+                    PrescriptionId = item.PrescriptionId,
+                    Prescription = MapOrderItemPrescription(item.Prescription)
                 })
                 .ToList(),
             Payment = latestPayment is null
@@ -1241,6 +1519,43 @@ public class OrderService(
         };
     }
 
+    private static OrderItemPrescriptionResponse? MapOrderItemPrescription(PrescriptionSpec? prescription)
+    {
+        return prescription is null
+            ? null
+            : new OrderItemPrescriptionResponse
+            {
+                PrescriptionId = prescription.PrescriptionId,
+                LensTypeId = prescription.LensTypeId,
+                LensTypeCode = prescription.LensTypeCode,
+                LensMaterial = prescription.LensMaterial,
+                Coatings = DeserializeCoatings(prescription.Coatings).ToList(),
+                LensBasePrice = prescription.LensBasePrice,
+                MaterialPrice = prescription.MaterialPrice,
+                CoatingPrice = prescription.CoatingPrice,
+                TotalLensPrice = prescription.TotalLensPrice,
+                RightEye = new OrderPrescriptionEyeResponse
+                {
+                    Sph = prescription.SphRight,
+                    Cyl = prescription.CylRight,
+                    Axis = prescription.AxisRight
+                },
+                LeftEye = new OrderPrescriptionEyeResponse
+                {
+                    Sph = prescription.SphLeft,
+                    Cyl = prescription.CylLeft,
+                    Axis = prescription.AxisLeft
+                },
+                Pd = prescription.Pd,
+                PrescriptionImageUrl = prescription.PrescriptionImage,
+                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
+                StaffId = prescription.StaffId,
+                VerifiedAt = prescription.VerifiedAt,
+                Notes = prescription.Notes,
+                CreatedAt = prescription.CreatedAt
+            };
+    }
+
     private static ApiException CreateApiException(HttpStatusCode statusCode, string errorCode, string message, object? details = null)
     {
         return new ApiException((int)statusCode, errorCode, message, details);
@@ -1254,7 +1569,17 @@ public class OrderService(
 
         public string? SelectedColor { get; init; }
 
+        public decimal OriginalUnitPrice { get; init; }
+
+        public decimal DiscountPercent { get; init; }
+
+        public decimal DiscountAmount { get; init; }
+
+        public decimal FinalUnitPrice { get; init; }
+
         public decimal UnitPrice { get; init; }
+
+        public string? PromotionNameSnapshot { get; init; }
 
         public decimal LineTotal { get; init; }
 

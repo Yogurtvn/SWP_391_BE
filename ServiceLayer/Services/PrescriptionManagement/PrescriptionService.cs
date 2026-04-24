@@ -15,10 +15,49 @@ namespace ServiceLayer.Services.PrescriptionManagement;
 
 public class PrescriptionService(
     IUnitOfWork unitOfWork,
-    OnlineEyewearDbContext dbContext) : IPrescriptionService
+    OnlineEyewearDbContext dbContext,
+    IPrescriptionPricingService prescriptionPricingService) : IPrescriptionService
 {
+    private static readonly HashSet<PrescriptionStatus> StaffReviewTargetStatuses =
+    [
+        PrescriptionStatus.Reviewing,
+        PrescriptionStatus.Approved,
+        PrescriptionStatus.Rejected,
+        PrescriptionStatus.InProduction
+    ];
+
+    private static readonly Dictionary<PrescriptionStatus, HashSet<PrescriptionStatus>> AllowedStatusTransitions = new()
+    {
+        [PrescriptionStatus.Submitted] =
+        [
+            PrescriptionStatus.Reviewing,
+            PrescriptionStatus.NeedMoreInfo,
+            PrescriptionStatus.Approved,
+            PrescriptionStatus.Rejected
+        ],
+        [PrescriptionStatus.Reviewing] =
+        [
+            PrescriptionStatus.NeedMoreInfo,
+            PrescriptionStatus.Approved,
+            PrescriptionStatus.Rejected
+        ],
+        [PrescriptionStatus.NeedMoreInfo] =
+        [
+            PrescriptionStatus.Submitted,
+            PrescriptionStatus.Reviewing,
+            PrescriptionStatus.Rejected
+        ],
+        [PrescriptionStatus.Approved] =
+        [
+            PrescriptionStatus.InProduction
+        ],
+        [PrescriptionStatus.Rejected] = [],
+        [PrescriptionStatus.InProduction] = []
+    };
+
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
+    private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
 
     public async Task<PagedResult<PrescriptionListItemResponse>> GetPrescriptionsAsync(
         GetPrescriptionsRequest request,
@@ -29,6 +68,7 @@ public class PrescriptionService(
         var query = _dbContext.PrescriptionSpecs
             .AsNoTracking()
             .Include(prescription => prescription.OrderItems)
+            .Include(prescription => prescription.User)
             .AsSplitQuery()
             .AsQueryable();
 
@@ -74,11 +114,21 @@ public class PrescriptionService(
             .Select(prescription => new PrescriptionListItemResponse
             {
                 PrescriptionId = prescription.PrescriptionId,
+                UserId = prescription.UserId,
+                CustomerName = prescription.User.FullName,
+                CustomerEmail = prescription.User.Email,
                 OrderId = prescription.OrderItems
                     .OrderBy(item => item.OrderItemId)
                     .Select(item => (int?)item.OrderId)
                     .FirstOrDefault(),
-                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus)
+                LensTypeId = prescription.LensTypeId,
+                LensTypeCode = prescription.LensTypeCode,
+                LensMaterial = prescription.LensMaterial,
+                TotalLensPrice = prescription.TotalLensPrice,
+                PrescriptionImageUrl = prescription.PrescriptionImage,
+                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
+                Notes = prescription.Notes,
+                CreatedAt = prescription.CreatedAt
             })
             .ToListAsync(cancellationToken);
 
@@ -91,6 +141,9 @@ public class PrescriptionService(
     {
         var prescription = await _dbContext.PrescriptionSpecs
             .AsNoTracking()
+            .Include(current => current.OrderItems)
+            .Include(current => current.LensType)
+            .Include(current => current.User)
             .FirstOrDefaultAsync(current => current.PrescriptionId == prescriptionId, cancellationToken);
 
         return prescription is null
@@ -98,6 +151,21 @@ public class PrescriptionService(
             : new PrescriptionDetailResponse
             {
                 PrescriptionId = prescription.PrescriptionId,
+                UserId = prescription.UserId,
+                CustomerName = prescription.User.FullName,
+                CustomerEmail = prescription.User.Email,
+                OrderId = prescription.OrderItems
+                    .OrderBy(item => item.OrderItemId)
+                    .Select(item => (int?)item.OrderId)
+                    .FirstOrDefault(),
+                LensTypeId = prescription.LensTypeId,
+                LensTypeCode = prescription.LensTypeCode ?? prescription.LensType?.LensCode,
+                LensMaterial = prescription.LensMaterial,
+                Coatings = DeserializeCoatings(prescription.Coatings).ToList(),
+                LensBasePrice = prescription.LensBasePrice,
+                MaterialPrice = prescription.MaterialPrice,
+                CoatingPrice = prescription.CoatingPrice,
+                TotalLensPrice = prescription.TotalLensPrice,
                 RightEye = new PrescriptionEyeResponse
                 {
                     Sph = prescription.SphRight,
@@ -111,7 +179,12 @@ public class PrescriptionService(
                     Axis = prescription.AxisLeft
                 },
                 Pd = prescription.Pd,
-                PrescriptionImageUrl = prescription.PrescriptionImage
+                PrescriptionImageUrl = prescription.PrescriptionImage,
+                PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
+                StaffId = prescription.StaffId,
+                VerifiedAt = prescription.VerifiedAt,
+                Notes = prescription.Notes,
+                CreatedAt = prescription.CreatedAt
             };
     }
 
@@ -128,6 +201,11 @@ public class PrescriptionService(
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
         }
 
+        if (!StaffReviewTargetStatuses.Contains(prescriptionStatus))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
+        }
+
         var prescription = await GetTrackedPrescriptionAsync(prescriptionId, cancellationToken);
 
         if (prescription is null)
@@ -135,10 +213,12 @@ public class PrescriptionService(
             throw CreateApiException(HttpStatusCode.NotFound, "PRESCRIPTION_NOT_FOUND", "Prescription not found");
         }
 
+        ValidateStatusTransition(prescription.PrescriptionStatus, prescriptionStatus);
+
         var now = DateTime.UtcNow;
         prescription.PrescriptionStatus = prescriptionStatus;
         prescription.StaffId = staffUserId;
-        prescription.Notes = NormalizeText(request.Notes);
+        prescription.Notes = NormalizeOptionalNote(request.Notes);
         prescription.VerifiedAt = prescriptionStatus is PrescriptionStatus.Approved or PrescriptionStatus.Rejected or PrescriptionStatus.InProduction
             ? now
             : null;
@@ -160,7 +240,7 @@ public class PrescriptionService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var notes = NormalizeText(request.Notes);
+        var notes = NormalizeOptionalNote(request.Notes);
 
         if (notes is null)
         {
@@ -173,6 +253,8 @@ public class PrescriptionService(
         {
             throw CreateApiException(HttpStatusCode.NotFound, "PRESCRIPTION_NOT_FOUND", "Prescription not found");
         }
+
+        ValidateStatusTransition(prescription.PrescriptionStatus, PrescriptionStatus.NeedMoreInfo);
 
         prescription.PrescriptionStatus = PrescriptionStatus.NeedMoreInfo;
         prescription.StaffId = staffUserId;
@@ -188,10 +270,229 @@ public class PrescriptionService(
         };
     }
 
+    public async Task<PrescriptionStatusResponse> ResubmitPrescriptionAsync(
+        int userId,
+        int prescriptionId,
+        ResubmitPrescriptionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var prescription = await _dbContext.PrescriptionSpecs
+            .Include(current => current.LensType)
+            .FirstOrDefaultAsync(
+                current => current.PrescriptionId == prescriptionId && current.UserId == userId,
+                cancellationToken);
+
+        if (prescription is null)
+        {
+            throw CreateApiException(HttpStatusCode.NotFound, "PRESCRIPTION_NOT_FOUND", "Prescription not found");
+        }
+
+        if (prescription.PrescriptionStatus != PrescriptionStatus.NeedMoreInfo)
+        {
+            throw CreateApiException(
+                HttpStatusCode.Conflict,
+                "PRESCRIPTION_RESUBMIT_NOT_ALLOWED",
+                "Prescription resubmission is only allowed when status is needMoreInfo");
+        }
+
+        if (prescription.LensType is null || !prescription.LensType.IsActive)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_INPUT", "Invalid prescription input");
+        }
+
+        ValidateStatusTransition(prescription.PrescriptionStatus, PrescriptionStatus.Submitted);
+
+        var preparedRequest = PrepareManualPrescriptionInput(request);
+        var recalculatedPricing = _prescriptionPricingService.Calculate(
+            framePrice: 0m,
+            lensBasePrice: prescription.LensType.Price,
+            lensMaterial: prescription.LensMaterial,
+            coatings: DeserializeCoatings(prescription.Coatings),
+            quantity: 1,
+            errorCode: "INVALID_PRESCRIPTION_INPUT",
+            errorMessage: "Invalid prescription input");
+
+        prescription.SphRight = preparedRequest.RightSph;
+        prescription.CylRight = preparedRequest.RightCyl;
+        prescription.AxisRight = preparedRequest.RightAxis;
+        prescription.SphLeft = preparedRequest.LeftSph;
+        prescription.CylLeft = preparedRequest.LeftCyl;
+        prescription.AxisLeft = preparedRequest.LeftAxis;
+        prescription.Pd = preparedRequest.Pd;
+        prescription.PrescriptionImage = preparedRequest.PrescriptionImageUrl;
+        prescription.Notes = preparedRequest.Notes;
+        prescription.LensTypeCode = prescription.LensType.LensCode;
+        prescription.LensMaterial = recalculatedPricing.LensMaterial;
+        prescription.Coatings = SerializeCoatings(recalculatedPricing.Coatings);
+        prescription.LensBasePrice = recalculatedPricing.LensBasePrice;
+        prescription.MaterialPrice = recalculatedPricing.MaterialPrice;
+        prescription.CoatingPrice = recalculatedPricing.CoatingPrice;
+        prescription.TotalLensPrice = recalculatedPricing.LensPrice;
+        prescription.PrescriptionStatus = PrescriptionStatus.Submitted;
+        prescription.StaffId = null;
+        prescription.VerifiedAt = null;
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return new PrescriptionStatusResponse
+        {
+            Message = "Prescription resubmitted",
+            PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(PrescriptionStatus.Submitted)
+        };
+    }
+
     private Task<PrescriptionSpec?> GetTrackedPrescriptionAsync(int prescriptionId, CancellationToken cancellationToken)
     {
         return _dbContext.PrescriptionSpecs
             .FirstOrDefaultAsync(current => current.PrescriptionId == prescriptionId, cancellationToken);
+    }
+
+    private static PreparedPrescriptionInput PrepareManualPrescriptionInput(ResubmitPrescriptionRequest request)
+    {
+        var rightEye = request.RightEye;
+        var leftEye = request.LeftEye;
+
+        if (rightEye?.Sph is null
+            || rightEye.Cyl is null
+            || rightEye.Axis is null
+            || leftEye?.Sph is null
+            || leftEye.Cyl is null
+            || leftEye.Axis is null
+            || request.Pd is null)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PRESCRIPTION_INPUT",
+                "Manual prescription input is required",
+                new { field = "manualPrescription", issue = "Manual prescription input is required" });
+        }
+
+        ValidateAxisRange(rightEye.Axis.Value, "rightEye.axis");
+        ValidateAxisRange(leftEye.Axis.Value, "leftEye.axis");
+
+        if (request.Pd.Value <= 0)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PRESCRIPTION_INPUT",
+                "Invalid prescription input",
+                new { field = "pd", issue = "pd must be greater than 0" });
+        }
+
+        var notes = NormalizeOptionalNote(request.Notes);
+        var prescriptionImageUrl = NormalizePrescriptionImageReference(request.PrescriptionImageUrl);
+
+        return new PreparedPrescriptionInput(
+            rightEye.Sph.Value,
+            rightEye.Cyl.Value,
+            rightEye.Axis.Value,
+            leftEye.Sph.Value,
+            leftEye.Cyl.Value,
+            leftEye.Axis.Value,
+            request.Pd.Value,
+            notes,
+            prescriptionImageUrl);
+    }
+
+    private static void ValidateStatusTransition(PrescriptionStatus currentStatus, PrescriptionStatus nextStatus)
+    {
+        if (currentStatus == nextStatus)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
+        }
+
+        if (!AllowedStatusTransitions.TryGetValue(currentStatus, out var allowedStatuses)
+            || !allowedStatuses.Contains(nextStatus))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
+        }
+    }
+
+    private static void ValidateAxisRange(int axis, string field)
+    {
+        if (axis is < 0 or > 180)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PRESCRIPTION_INPUT",
+                "Invalid prescription input",
+                new { field, issue = $"{field} must be between 0 and 180" });
+        }
+    }
+
+    private static IReadOnlyList<string> DeserializeCoatings(string? serializedCoatings)
+    {
+        if (string.IsNullOrWhiteSpace(serializedCoatings))
+        {
+            return [];
+        }
+
+        return serializedCoatings
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
+    {
+        if (coatings is null || coatings.Count == 0)
+        {
+            return null;
+        }
+
+        var serialized = string.Join(",", coatings);
+
+        if (serialized.Length > 500)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_INPUT", "Invalid prescription input");
+        }
+
+        return serialized;
+    }
+
+    private static string? NormalizePrescriptionImageReference(string? value)
+    {
+        var normalized = NormalizeText(value);
+
+        if (normalized is not null
+            && normalized.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PRESCRIPTION_INPUT",
+                "Invalid prescription input",
+                new { field = "prescriptionImageUrl", issue = "prescriptionImageUrl must be an uploaded image URL/path, not raw image data" });
+        }
+
+        if (normalized is not null && normalized.Length > 500)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PRESCRIPTION_INPUT",
+                "Invalid prescription input",
+                new { field = "prescriptionImageUrl", issue = "prescriptionImageUrl must not exceed 500 characters" });
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeOptionalNote(string? value)
+    {
+        var normalized = NormalizeText(value);
+
+        if (normalized is not null && normalized.Length > 255)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_PRESCRIPTION_INPUT",
+                "Invalid prescription input",
+                new { field = "notes", issue = "notes must not exceed 255 characters" });
+        }
+
+        return normalized;
     }
 
     private static IOrderedQueryable<PrescriptionSpec> ApplySorting(
@@ -252,4 +553,15 @@ public class PrescriptionService(
     {
         return new ApiException((int)statusCode, errorCode, message, details);
     }
+
+    private sealed record PreparedPrescriptionInput(
+        decimal RightSph,
+        decimal RightCyl,
+        int RightAxis,
+        decimal LeftSph,
+        decimal LeftCyl,
+        int LeftAxis,
+        decimal Pd,
+        string? Notes,
+        string? PrescriptionImageUrl);
 }

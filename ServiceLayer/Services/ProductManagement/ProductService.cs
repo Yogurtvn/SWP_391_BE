@@ -9,6 +9,7 @@ using ServiceLayer.DTOs.Product.Response;
 using ServiceLayer.DTOs.ProductImage.Response;
 using ServiceLayer.DTOs.ProductVariant.Response;
 using ServiceLayer.Exceptions;
+using ServiceLayer.Utilities;
 using System.Net;
 
 namespace ServiceLayer.Services.ProductManagement;
@@ -73,12 +74,13 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
                             .Select(variant => (decimal?)variant.Price)
                             .Min() ?? product.BasePrice) <= request.MaxPrice.Value)),
             orderBy: query => ApplyProductOrdering(query, sortBy, sortDescending, includeInactive),
-            includeProperties: "Variants.Inventory,Images",
+            includeProperties: "Variants.Inventory,Variants.Promotion,Images",
             tracked: false,
             cancellationToken: cancellationToken);
 
+        var now = DateTime.UtcNow;
         var items = pagedProducts.Items
-            .Select(product => MapToListItem(product, includeInactive))
+            .Select(product => MapToListItem(product, includeInactive, now))
             .ToList();
 
         return PagedResult<ProductListItemResponse>.Create(
@@ -96,7 +98,7 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         var repository = _unitOfWork.Repository<RepositoryLayer.Entities.Product>();
         var product = await repository.GetFirstOrDefaultAsync(
             productEntity => productEntity.ProductId == productId && (includeInactive || productEntity.IsActive),
-            includeProperties: "Variants.Inventory,Images",
+            includeProperties: "Variants.Inventory,Variants.Promotion,Images",
             tracked: false);
 
         if (product is null)
@@ -104,7 +106,7 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             return null;
         }
 
-        return MapToDetailResponse(product, includeInactive);
+        return MapToDetailResponse(product, includeInactive, DateTime.UtcNow);
     }
 
     public async Task<ProductIdResponse> CreateProductAsync(CreateProductRequest request, CancellationToken cancellationToken = default)
@@ -272,7 +274,10 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         }
     }
 
-    private static ProductListItemResponse MapToListItem(RepositoryLayer.Entities.Product product, bool includeInactive)
+    private static ProductListItemResponse MapToListItem(
+        RepositoryLayer.Entities.Product product,
+        bool includeInactive,
+        DateTime currentTime)
     {
         var visibleVariants = GetVisibleVariants(product, includeInactive)
             .ToList();
@@ -289,16 +294,25 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             ProductType = ToApiEnum(product.ProductType),
             BasePrice = ResolveDisplayPrice(product, includeInactive),
             ThumbnailUrl = primaryImage?.ImageUrl,
+            IsActive = product.IsActive,
             IsAvailable = visibleVariants.Any(variant => (variant.Inventory?.Quantity ?? 0) > 0),
-            IsPreOrderAllowed = visibleVariants.Any(variant => variant.Inventory?.IsPreOrderAllowed == true)
+            IsReadyAvailable = visibleVariants.Any(variant => (variant.Inventory?.Quantity ?? 0) > 0),
+            IsPreOrderAllowed = visibleVariants.Any(variant => variant.Inventory?.IsPreOrderAllowed == true),
+            Variants = visibleVariants
+                .OrderBy(variant => variant.VariantId)
+                .Select(variant => MapVariantToListItem(variant, currentTime))
+                .ToList()
         };
     }
 
-    private static ProductDetailResponse MapToDetailResponse(RepositoryLayer.Entities.Product product, bool includeInactive)
+    private static ProductDetailResponse MapToDetailResponse(
+        RepositoryLayer.Entities.Product product,
+        bool includeInactive,
+        DateTime currentTime)
     {
         var variants = GetVisibleVariants(product, includeInactive)
             .OrderBy(variant => variant.VariantId)
-            .Select(MapVariantToListItem)
+            .Select(variant => MapVariantToListItem(variant, currentTime))
             .ToList();
         var images = product.Images
             .OrderBy(image => image.DisplayOrder)
@@ -310,17 +324,21 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         {
             ProductId = product.ProductId,
             ProductName = product.ProductName,
+            CategoryId = product.CategoryId,
             ProductType = ToApiEnum(product.ProductType),
             Description = product.Description,
             BasePrice = product.BasePrice,
+            IsActive = product.IsActive,
             PrescriptionCompatible = product.PrescriptionCompatible,
             Variants = variants,
             Images = images
         };
     }
 
-    private static ProductVariantListItemResponse MapVariantToListItem(ProductVariant variant)
+    private static ProductVariantListItemResponse MapVariantToListItem(ProductVariant variant, DateTime currentTime)
     {
+        var pricing = PromotionPricingHelper.Calculate(variant, currentTime);
+
         return new ProductVariantListItemResponse
         {
             VariantId = variant.VariantId,
@@ -328,8 +346,15 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             Color = variant.Color,
             Size = variant.Size,
             Price = variant.Price,
+            OriginalPrice = pricing.OriginalPrice,
+            DiscountPercent = pricing.DiscountPercent,
+            DiscountAmount = pricing.DiscountAmount,
+            FinalPrice = pricing.FinalPrice,
             Quantity = variant.Inventory?.Quantity ?? 0,
-            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false
+            IsReadyAvailable = (variant.Inventory?.Quantity ?? 0) > 0,
+            IsPreOrderAllowed = variant.Inventory?.IsPreOrderAllowed ?? false,
+            ExpectedRestockDate = variant.Inventory?.ExpectedRestockDate,
+            PreOrderNote = variant.Inventory?.PreOrderNote
         };
     }
 

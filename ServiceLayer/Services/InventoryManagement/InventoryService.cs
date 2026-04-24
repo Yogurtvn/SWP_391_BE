@@ -1,7 +1,7 @@
 using RepositoryLayer.Common;
-using RepositoryLayer.Entities;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Inventory;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.DTOs.Inventory.Request;
 using ServiceLayer.DTOs.Inventory.Response;
 using ServiceLayer.Exceptions;
@@ -10,9 +10,12 @@ using InventoryEntity = RepositoryLayer.Entities.Inventory;
 
 namespace ServiceLayer.Services.InventoryManagement;
 
-public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
+public class InventoryService(
+    IUnitOfWork unitOfWork,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IInventoryService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<PagedResult<InventoryListDtoResponse>> GetInventoriesAsync(
         PaginationRequest paginationRequest,
@@ -76,13 +79,22 @@ public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
             return false;
         }
 
+        var previousQuantity = inventory.Quantity;
         inventory.Quantity = request.Quantity;
         inventory.IsPreOrderAllowed = request.IsPreOrderAllowed;
         inventory.ExpectedRestockDate = request.ExpectedRestockDate;
         inventory.PreOrderNote = request.PreOrderNote?.Trim();
+        var currentQuantity = inventory.Quantity;
 
         repository.Update(inventory);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        await _backInStockNotificationService.HandleStockChangeAsync(
+            variantId,
+            previousQuantity,
+            currentQuantity,
+            source: "inventory:update",
+            cancellationToken);
 
         return true;
     }
@@ -113,7 +125,10 @@ public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
         {
             VariantId = inventory.VariantId,
             Quantity = inventory.Quantity,
-            IsPreOrderAllowed = inventory.IsPreOrderAllowed
+            IsReadyAvailable = inventory.Quantity > 0,
+            IsPreOrderAllowed = inventory.IsPreOrderAllowed,
+            ExpectedRestockDate = inventory.ExpectedRestockDate,
+            PreOrderNote = inventory.PreOrderNote
         };
     }
 
@@ -123,8 +138,10 @@ public class InventoryService(IUnitOfWork unitOfWork) : IInventoryService
         {
             VariantId = inventory.VariantId,
             Quantity = inventory.Quantity,
+            IsReadyAvailable = inventory.Quantity > 0,
             IsPreOrderAllowed = inventory.IsPreOrderAllowed,
-            ExpectedRestockDate = inventory.ExpectedRestockDate
+            ExpectedRestockDate = inventory.ExpectedRestockDate,
+            PreOrderNote = inventory.PreOrderNote
         };
     }
 

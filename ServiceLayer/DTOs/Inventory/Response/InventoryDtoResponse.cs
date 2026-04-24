@@ -1,11 +1,16 @@
 namespace ServiceLayer.DTOs.Inventory.Response;
 
-// DTO trả về thông tin chi tiết inventory của 1 variant (dùng cho GET /api/inventories/{variantId})
 public class InventoryDtoResponse
 {
-    public int VariantId { get; set; }          // ID của product variant
+    public int VariantId { get; set; }
 
-    public int Quantity { get; set; }           // Số lượng tồn kho hiện tại
+    public int Quantity { get; set; }
 
-    public bool IsPreOrderAllowed { get; set; } // Có cho phép đặt hàng trước không
+    public bool IsReadyAvailable { get; set; }
+
+    public bool IsPreOrderAllowed { get; set; }
+
+    public DateTime? ExpectedRestockDate { get; set; }
+
+    public string? PreOrderNote { get; set; }
 }

@@ -19,4 +19,7 @@ public interface IReportService
 
     // Dashboard tổng hợp nhanh cho admin
     Task<DashboardResponse> GetDashboardAsync(DateTime? startDate, DateTime? endDate, CancellationToken cancellationToken = default);
+
+    // Dashboard biểu đồ theo mốc thời gian (1 tuần, 1 tháng, 6 tháng, 1 năm)
+    Task<DashboardChartResponse> GetDashboardChartAsync(string timeRange, CancellationToken cancellationToken = default);
 }
