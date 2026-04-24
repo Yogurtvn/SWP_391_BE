@@ -689,9 +689,7 @@ public class OrderService(
 
         var now = DateTime.UtcNow;
         var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
-        var initialOrderStatus = orderType == OrderType.PreOrder
-            ? OrderStatus.AwaitingStock
-            : OrderStatus.Pending;
+        var initialOrderStatus = OrderStatus.Pending;
         var order = new Order
         {
             UserId = userId,
