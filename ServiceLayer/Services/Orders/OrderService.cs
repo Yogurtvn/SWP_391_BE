@@ -24,53 +24,17 @@ public class OrderService(
     IPrescriptionPricingService prescriptionPricingService,
     IPreOrderBackInStockNotificationService backInStockNotificationService) : IOrderService
 {
-    private static readonly HashSet<OrderStatus> CancellableStatuses =
-    [
-        OrderStatus.Pending,
-        OrderStatus.Confirmed,
-        OrderStatus.AwaitingStock
-    ];
-
-    // TODO: align the transition matrix once API_SPEC.md defines the exact orderStatus rules.
-    private static readonly Dictionary<OrderStatus, HashSet<OrderStatus>> AllowedStatusTransitions = new()
-    {
-        [OrderStatus.Pending] =
-        [
-            OrderStatus.Confirmed,
-            OrderStatus.AwaitingStock,
-            OrderStatus.Cancelled
-        ],
-        [OrderStatus.Confirmed] =
-        [
-            OrderStatus.Processing,
-            OrderStatus.AwaitingStock,
-            OrderStatus.Cancelled
-        ],
-        [OrderStatus.AwaitingStock] =
-        [
-            OrderStatus.Confirmed,
-            OrderStatus.Processing,
-            OrderStatus.Cancelled
-        ],
-        [OrderStatus.Processing] =
-        [
-            OrderStatus.Shipped,
-            OrderStatus.Cancelled
-        ],
-        [OrderStatus.Shipped] =
-        [
-            OrderStatus.Completed
-        ],
-        [OrderStatus.Completed] = [],
-        [OrderStatus.Cancelled] = []
-    };
+    private const string PaymentRuleErrorCode = "ORDER_CANNOT_BE_CANCELLED";
+    private const string PaymentRuleErrorMessage = "Order cannot be cancelled at current payment status";
+    private const string PreOrderProcessingLockErrorCode = "PREORDER_STATUS_LOCKED";
+    private const string PreOrderProcessingLockMessage =
+        "Pre-order can only move from AwaitingStock to Processing through stock restoration workflows.";
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPaymentService _paymentService = paymentService;
     private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
-    private readonly record struct InventoryQuantityTransition(int VariantId, int PreviousQuantity, int CurrentQuantity);
 
     public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
@@ -334,6 +298,8 @@ public class OrderService(
             .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Variant)
                     .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .Include(current => current.Payments)
                 .ThenInclude(payment => payment.PaymentHistories)
             .Include(current => current.OrderStatusHistories)
@@ -351,23 +317,35 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
         }
 
-        if (!CancellableStatuses.Contains(order.OrderStatus))
+        if (!OrderWorkflowPolicies.CanCustomerCancelByOrderStatus(order))
         {
             throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
         }
 
-        if (order.Payments.Any(payment => payment.PaymentStatus == PaymentStatus.Completed))
+        if (order.OrderType == OrderType.Prescription
+            && !OrderWorkflowPolicies.IsPrescriptionCustomerCancellationWindowOpen(order))
         {
             throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
+        }
+
+        if (!OrderWorkflowPolicies.CanCancelByPaymentRule(order.Payments))
+        {
+            throw CreateApiException(HttpStatusCode.Conflict, PaymentRuleErrorCode, PaymentRuleErrorMessage);
         }
 
         var note = NormalizeText(request.Reason);
-        IReadOnlyCollection<InventoryQuantityTransition> inventoryTransitions = Array.Empty<InventoryQuantityTransition>();
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
-            inventoryTransitions = await CancelOrderInternalAsync(order, userId, note ?? "Order cancelled by customer.", cancellationToken);
+            inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
+                _unitOfWork,
+                order,
+                userId,
+                note ?? "Order cancelled by customer.",
+                cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
         catch
@@ -542,6 +520,8 @@ public class OrderService(
             .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Variant)
                     .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.OrderItems)
+                .ThenInclude(item => item.Prescription)
             .Include(current => current.Payments)
                 .ThenInclude(payment => payment.PaymentHistories)
             .Include(current => current.OrderStatusHistories)
@@ -552,8 +532,17 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.NotFound, "ORDER_NOT_FOUND", "Order not found");
         }
 
-        ValidateStatusTransition(order.OrderStatus, nextOrderStatus);
-        IReadOnlyCollection<InventoryQuantityTransition> inventoryTransitions = Array.Empty<InventoryQuantityTransition>();
+        if (OrderWorkflowPolicies.IsPreOrderStockRestorationTransition(order.OrderType, order.OrderStatus, nextOrderStatus))
+        {
+            throw CreateApiException(HttpStatusCode.Conflict, PreOrderProcessingLockErrorCode, PreOrderProcessingLockMessage);
+        }
+
+        ValidateOrderStatusTransition(
+            order,
+            nextOrderStatus,
+            OrderStatusTransitionContext.StaffPatch);
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
         try
         {
@@ -561,8 +550,9 @@ public class OrderService(
 
             if (nextOrderStatus == OrderStatus.Cancelled)
             {
-                order.StaffId = staffUserId;
-                inventoryTransitions = await CancelOrderInternalAsync(
+                EnsureCancellationAllowedByPayment(order);
+                inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
+                    _unitOfWork,
                     order,
                     staffUserId,
                     NormalizeText(request.Note) ?? "Order cancelled by staff.",
@@ -623,6 +613,11 @@ public class OrderService(
         if (order is null)
         {
             throw CreateApiException(HttpStatusCode.NotFound, "ORDER_NOT_FOUND", "Order not found");
+        }
+
+        if (!OrderWorkflowPolicies.CanUpdateShippingStatus(order.OrderStatus, shippingStatus))
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_SHIPPING_STATUS", "Invalid shipping status update");
         }
 
         order.ShippingStatus = shippingStatus;
@@ -1133,80 +1128,63 @@ public class OrderService(
         return distinctOrderTypes[0];
     }
 
-    private async Task<IReadOnlyCollection<InventoryQuantityTransition>> CancelOrderInternalAsync(
+    private static void ValidateOrderStatusTransition(
         Order order,
-        int updatedByUserId,
-        string note,
-        CancellationToken cancellationToken)
+        OrderStatus nextOrderStatus,
+        OrderStatusTransitionContext transitionContext)
     {
-        var now = DateTime.UtcNow;
-        var inventoryTransitions = new Dictionary<int, InventoryQuantityTransition>();
-
-        foreach (var orderItem in order.OrderItems)
+        if (!OrderWorkflowPolicies.CanTransitionOrderStatus(order.OrderType, order.OrderStatus, nextOrderStatus, transitionContext))
         {
-            if (order.OrderType != OrderType.PreOrder)
-            {
-                var inventory = orderItem.Variant.Inventory;
-
-                if (inventory is null)
-                {
-                    inventory = new Inventory
-                    {
-                        VariantId = orderItem.VariantId,
-                        Quantity = 0,
-                        IsPreOrderAllowed = false
-                    };
-
-                    await _unitOfWork.Repository<Inventory>().AddAsync(inventory);
-                    orderItem.Variant.Inventory = inventory;
-                }
-
-                var previousQuantity = inventory.Quantity;
-                inventory.Quantity += orderItem.Quantity;
-                var currentQuantity = inventory.Quantity;
-
-                if (inventoryTransitions.TryGetValue(orderItem.VariantId, out var transition))
-                {
-                    inventoryTransitions[orderItem.VariantId] = transition with { CurrentQuantity = currentQuantity };
-                }
-                else
-                {
-                    inventoryTransitions[orderItem.VariantId] = new InventoryQuantityTransition(
-                        orderItem.VariantId,
-                        previousQuantity,
-                        currentQuantity);
-                }
-            }
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
-        order.OrderStatus = OrderStatus.Cancelled;
-        order.ShippingStatus = null;
-        order.UpdatedAt = now;
-        order.OrderStatusHistories.Add(new OrderStatusHistory
+        if (order.OrderType == OrderType.PreOrder
+            && order.OrderStatus == OrderStatus.Pending
+            && nextOrderStatus == OrderStatus.AwaitingStock)
         {
-            OrderStatus = OrderStatus.Cancelled,
-            UpdatedByUserId = updatedByUserId,
-            Note = note,
-            UpdatedAt = now
-        });
-
-        foreach (var payment in order.Payments.Where(payment => payment.PaymentStatus != PaymentStatus.Completed))
-        {
-            payment.PaymentStatus = PaymentStatus.Failed;
-            payment.PaymentHistories.Add(new PaymentHistory
-            {
-                PaymentStatus = PaymentStatus.Failed,
-                Notes = "Payment closed because the order was cancelled.",
-                CreatedAt = now
-            });
+            EnsurePreOrderCanMoveToAwaitingStock(order);
         }
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-        return inventoryTransitions.Values.ToArray();
+        if (order.OrderType == OrderType.Prescription
+            && order.OrderStatus == OrderStatus.Pending
+            && nextOrderStatus == OrderStatus.Processing)
+        {
+            EnsurePrescriptionCanMoveToProcessing(order);
+        }
+    }
+
+    private static void EnsurePreOrderCanMoveToAwaitingStock(Order order)
+    {
+        if (!OrderWorkflowPolicies.CanMovePreOrderToAwaitingStock(order.Payments))
+        {
+            throw CreateApiException(
+                HttpStatusCode.Conflict,
+                "ORDER_STATUS_GUARD_FAILED",
+                "Order cannot move to awaiting stock before online payment is completed");
+        }
+    }
+
+    private static void EnsurePrescriptionCanMoveToProcessing(Order order)
+    {
+        if (!OrderWorkflowPolicies.AreAllPrescriptionItemsApproved(order))
+        {
+            throw CreateApiException(
+                HttpStatusCode.Conflict,
+                "PRESCRIPTION_NOT_APPROVED",
+                "Order cannot move to processing before prescriptions are approved");
+        }
+    }
+
+    private void EnsureCancellationAllowedByPayment(Order order)
+    {
+        if (!OrderWorkflowPolicies.CanCancelByPaymentRule(order.Payments))
+        {
+            throw CreateApiException(HttpStatusCode.Conflict, PaymentRuleErrorCode, PaymentRuleErrorMessage);
+        }
     }
 
     private async Task NotifyBackInStockTransitionsAsync(
-        IEnumerable<InventoryQuantityTransition> transitions,
+        IEnumerable<OrderWorkflowMutations.InventoryQuantityTransition> transitions,
         string source,
         CancellationToken cancellationToken)
     {
@@ -1256,20 +1234,6 @@ public class OrderService(
         if ((item.ReserveInventory || item.RequirePreOrderEnabled) && item.Variant.Inventory is null)
         {
             throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
-        }
-    }
-
-    private static void ValidateStatusTransition(OrderStatus currentStatus, OrderStatus nextStatus)
-    {
-        if (currentStatus == nextStatus)
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
-        }
-
-        if (!AllowedStatusTransitions.TryGetValue(currentStatus, out var allowedStatuses)
-            || !allowedStatuses.Contains(nextStatus))
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
     }
 
@@ -1330,7 +1294,6 @@ public class OrderService(
     {
         return orderStatus switch
         {
-            OrderStatus.Confirmed => "Order confirmed.",
             OrderStatus.AwaitingStock => "Order moved to awaiting stock.",
             OrderStatus.Processing => "Order is being processed.",
             OrderStatus.Shipped => "Order shipped.",

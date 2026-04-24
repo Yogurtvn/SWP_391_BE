@@ -83,7 +83,7 @@ public class ReportService(IUnitOfWork unitOfWork) : IReportService
         {
             TotalPrescriptionOrders = prescriptionList.Count,                                                       // Tổng số đơn prescription
             Approved = prescriptionList.Count(p => p.PrescriptionStatus == PrescriptionStatus.Approved),             // Đếm đã duyệt
-            NeedMoreInfo = prescriptionList.Count(p => p.PrescriptionStatus == PrescriptionStatus.NeedMoreInfo),     // Đếm cần bổ sung
+            NeedMoreInfo = 0,                                                                                          // Deprecated runtime state
             Rejected = prescriptionList.Count(p => p.PrescriptionStatus == PrescriptionStatus.Rejected)              // Đếm bị từ chối
         };
     }

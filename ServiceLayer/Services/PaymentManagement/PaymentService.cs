@@ -4,6 +4,7 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Payment;
 using ServiceLayer.DTOs.Payment.Request;
 using ServiceLayer.DTOs.Payment.Response;
@@ -19,11 +20,13 @@ namespace ServiceLayer.Services.PaymentManagement;
 public class PaymentService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IPayOsGatewayClient payOsGatewayClient) : IPaymentService
+    IPayOsGatewayClient payOsGatewayClient,
+    IPreOrderBackInStockNotificationService backInStockNotificationService) : IPaymentService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPayOsGatewayClient _payOsGatewayClient = payOsGatewayClient;
+    private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
     public async Task<CreatePaymentResponse> CreatePaymentAsync(
         int currentUserId,
@@ -295,6 +298,8 @@ public class PaymentService(
         var targetStatus = MapPayOsStatus(payOsStatus);
         var reconciled = false;
         string message;
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
         if (targetStatus is null)
         {
@@ -310,18 +315,38 @@ public class PaymentService(
             }
             else
             {
-                var now = DateTime.UtcNow;
-                payment.PaymentStatus = PaymentStatus.Completed;
-                payment.PaidAt = now;
-                payment.PaymentHistories.Add(new PaymentHistory
-                {
-                    PaymentStatus = PaymentStatus.Completed,
-                    TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
-                    Notes = "PayOS reconcile confirmed payment after return.",
-                    CreatedAt = now
-                });
+                var previousStatus = payment.PaymentStatus;
 
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+                    var now = DateTime.UtcNow;
+                    payment.PaymentStatus = PaymentStatus.Completed;
+                    payment.PaidAt = now;
+                    payment.PaymentHistories.Add(new PaymentHistory
+                    {
+                        PaymentStatus = PaymentStatus.Completed,
+                        TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
+                        Notes = "PayOS reconcile confirmed payment after return.",
+                        CreatedAt = now
+                    });
+
+                    await _unitOfWork.SaveChangesAsync(cancellationToken);
+                    inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                        payment,
+                        previousStatus,
+                        "payment:reconcile",
+                        cancellationToken);
+
+                    await _unitOfWork.CommitTransactionAsync(cancellationToken);
+                }
+                catch
+                {
+                    await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+                    throw;
+                }
+
                 reconciled = true;
                 message = "Payment status updated from PayOS after return.";
             }
@@ -338,22 +363,44 @@ public class PaymentService(
             }
             else
             {
-                var now = DateTime.UtcNow;
-                payment.PaymentStatus = PaymentStatus.Failed;
-                payment.PaidAt = null;
-                payment.PaymentHistories.Add(new PaymentHistory
-                {
-                    PaymentStatus = PaymentStatus.Failed,
-                    TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
-                    Notes = "PayOS reconcile marked payment as failed after return.",
-                    CreatedAt = now
-                });
+                var previousStatus = payment.PaymentStatus;
 
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+                    var now = DateTime.UtcNow;
+                    payment.PaymentStatus = PaymentStatus.Failed;
+                    payment.PaidAt = null;
+                    payment.PaymentHistories.Add(new PaymentHistory
+                    {
+                        PaymentStatus = PaymentStatus.Failed,
+                        TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
+                        Notes = "PayOS reconcile marked payment as failed after return.",
+                        CreatedAt = now
+                    });
+
+                    await _unitOfWork.SaveChangesAsync(cancellationToken);
+                    inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                        payment,
+                        previousStatus,
+                        "payment:reconcile",
+                        cancellationToken);
+
+                    await _unitOfWork.CommitTransactionAsync(cancellationToken);
+                }
+                catch
+                {
+                    await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+                    throw;
+                }
+
                 reconciled = true;
                 message = "Payment status marked as failed from PayOS after return.";
             }
         }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "payment:reconcile", cancellationToken);
 
         return MapPayOsPaymentReconciliation(payment, orderCode, payOsStatus, reconciled, message);
     }
@@ -370,8 +417,7 @@ public class PaymentService(
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_STATUS", "Invalid payment status update");
         }
 
-        var payment = await _dbContext.Payments
-            .Include(current => current.PaymentHistories)
+        var payment = await BuildPaymentWorkflowQuery(asNoTracking: false)
             .FirstOrDefaultAsync(current => current.PaymentId == paymentId, cancellationToken);
 
         if (payment is null)
@@ -384,18 +430,41 @@ public class PaymentService(
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PAYMENT_STATUS", "Invalid payment status update");
         }
 
-        var now = DateTime.UtcNow;
-        payment.PaymentStatus = paymentStatus;
-        payment.PaidAt = paymentStatus == PaymentStatus.Completed ? now : null;
-        payment.PaymentHistories.Add(new PaymentHistory
-        {
-            PaymentStatus = paymentStatus,
-            TransactionCode = NormalizeText(request.TransactionCode),
-            Notes = NormalizeText(request.Notes),
-            CreatedAt = now
-        });
+        var previousStatus = payment.PaymentStatus;
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+            var now = DateTime.UtcNow;
+            payment.PaymentStatus = paymentStatus;
+            payment.PaidAt = paymentStatus == PaymentStatus.Completed ? now : null;
+            payment.PaymentHistories.Add(new PaymentHistory
+            {
+                PaymentStatus = paymentStatus,
+                TransactionCode = NormalizeText(request.TransactionCode),
+                Notes = NormalizeText(request.Notes),
+                CreatedAt = now
+            });
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                payment,
+                previousStatus,
+                "payment:update-status",
+                cancellationToken);
+
+            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+        }
+        catch
+        {
+            await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+            throw;
+        }
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "payment:update-status", cancellationToken);
 
         return new PaymentStatusUpdatedResponse
         {
@@ -529,11 +598,13 @@ public class PaymentService(
 
         var successfulWebhook = IsPayOsSuccess(envelope);
 
-        await ApplyPayOsWebhookResultAsync(
+        var inventoryTransitions = await ApplyPayOsWebhookResultAsync(
             resolution.Payment,
             verification.Data,
             successfulWebhook,
             cancellationToken);
+
+        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "payment:webhook", cancellationToken);
 
         return successfulWebhook
             ? CreateWebhookResponse(true, true, "Payment processed successfully")
@@ -566,18 +637,11 @@ public class PaymentService(
         CancellationToken cancellationToken)
     {
         var orderCodeText = orderCode.ToString(CultureInfo.InvariantCulture);
-        var query = _dbContext.Payments
-            .Include(current => current.Order)
-            .Include(current => current.PaymentHistories)
+        var query = BuildPaymentWorkflowQuery(asNoTracking)
             .Where(current =>
                 current.PaymentMethod == PaymentMethod.PayOS
                 && current.PaymentHistories.Any(history => history.TransactionCode == orderCodeText)
                 && (canAccessAllOrders || current.Order.UserId == currentUserId));
-
-        if (asNoTracking)
-        {
-            query = query.AsNoTracking();
-        }
 
         return await query.FirstOrDefaultAsync(cancellationToken);
     }
@@ -591,8 +655,7 @@ public class PaymentService(
             return new PayOsWebhookResolution(PayOsWebhookResolutionResult.PaymentNotFound, null);
         }
 
-        var payment = await _dbContext.Payments
-            .Include(current => current.PaymentHistories)
+        var payment = await BuildPaymentWorkflowQuery(asNoTracking: false)
             .FirstOrDefaultAsync(
                 current => current.PaymentId == paymentId && current.PaymentMethod == PaymentMethod.PayOS,
                 cancellationToken);
@@ -600,8 +663,7 @@ public class PaymentService(
         if (payment is null && webhookData.OrderCode > 0)
         {
             var orderCodeText = webhookData.OrderCode.ToString(CultureInfo.InvariantCulture);
-            payment = await _dbContext.Payments
-                .Include(current => current.PaymentHistories)
+            payment = await BuildPaymentWorkflowQuery(asNoTracking: false)
                 .FirstOrDefaultAsync(
                     current => current.PaymentMethod == PaymentMethod.PayOS
                         && current.PaymentHistories.Any(history => history.TransactionCode == orderCodeText),
@@ -621,54 +683,95 @@ public class PaymentService(
         return new PayOsWebhookResolution(PayOsWebhookResolutionResult.Valid, payment);
     }
 
-    private async Task ApplyPayOsWebhookResultAsync(
+    private async Task<IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition>> ApplyPayOsWebhookResultAsync(
         Payment payment,
         PayOsVerifiedWebhookData webhookData,
         bool success,
         CancellationToken cancellationToken)
     {
-        var now = DateTime.UtcNow;
         var transactionCode = TruncateTransactionCode(
             NormalizeText(webhookData.Reference)
             ?? webhookData.OrderCode.ToString(CultureInfo.InvariantCulture));
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
+        var previousStatus = payment.PaymentStatus;
 
         if (success)
         {
             if (payment.PaymentStatus == PaymentStatus.Completed)
             {
-                return;
+                return inventoryTransitions;
             }
 
-            payment.PaymentStatus = PaymentStatus.Completed;
-            payment.PaidAt = now;
-            payment.PaymentHistories.Add(new PaymentHistory
+            try
             {
-                PaymentStatus = PaymentStatus.Completed,
-                TransactionCode = transactionCode,
-                Notes = "PayOS webhook confirmed payment.",
-                CreatedAt = now
-            });
+                await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-            return;
+                var now = DateTime.UtcNow;
+                payment.PaymentStatus = PaymentStatus.Completed;
+                payment.PaidAt = now;
+                payment.PaymentHistories.Add(new PaymentHistory
+                {
+                    PaymentStatus = PaymentStatus.Completed,
+                    TransactionCode = transactionCode,
+                    Notes = "PayOS webhook confirmed payment.",
+                    CreatedAt = now
+                });
+
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                    payment,
+                    previousStatus,
+                    "payment:webhook",
+                    cancellationToken);
+
+                await _unitOfWork.CommitTransactionAsync(cancellationToken);
+            }
+            catch
+            {
+                await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+                throw;
+            }
+
+            return inventoryTransitions;
         }
 
         if (payment.PaymentStatus == PaymentStatus.Completed || payment.PaymentStatus == PaymentStatus.Failed)
         {
-            return;
+            return inventoryTransitions;
         }
 
-        payment.PaymentStatus = PaymentStatus.Failed;
-        payment.PaidAt = null;
-        payment.PaymentHistories.Add(new PaymentHistory
+        try
         {
-            PaymentStatus = PaymentStatus.Failed,
-            TransactionCode = transactionCode,
-            Notes = "PayOS webhook marked payment as failed.",
-            CreatedAt = now
-        });
+            await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+            var now = DateTime.UtcNow;
+            payment.PaymentStatus = PaymentStatus.Failed;
+            payment.PaidAt = null;
+            payment.PaymentHistories.Add(new PaymentHistory
+            {
+                PaymentStatus = PaymentStatus.Failed,
+                TransactionCode = transactionCode,
+                Notes = "PayOS webhook marked payment as failed.",
+                CreatedAt = now
+            });
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                payment,
+                previousStatus,
+                "payment:webhook",
+                cancellationToken);
+
+            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+        }
+        catch
+        {
+            await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+            throw;
+        }
+
+        return inventoryTransitions;
     }
 
     private static bool TryResolvePaymentId(PayOsVerifiedWebhookData webhookData, out int paymentId)
@@ -785,6 +888,106 @@ public class PaymentService(
 
         value = default;
         return false;
+    }
+
+    private IQueryable<Payment> BuildPaymentWorkflowQuery(bool asNoTracking)
+    {
+        IQueryable<Payment> query = _dbContext.Payments
+            .Include(current => current.PaymentHistories)
+            .Include(current => current.Order)
+                .ThenInclude(order => order.OrderItems)
+                    .ThenInclude(orderItem => orderItem.Variant)
+                        .ThenInclude(variant => variant.Inventory)
+            .Include(current => current.Order)
+                .ThenInclude(order => order.OrderItems)
+                    .ThenInclude(orderItem => orderItem.Prescription)
+            .Include(current => current.Order)
+                .ThenInclude(order => order.Payments)
+                    .ThenInclude(orderPayment => orderPayment.PaymentHistories)
+            .Include(current => current.Order)
+                .ThenInclude(order => order.OrderStatusHistories)
+            .AsSplitQuery();
+
+        if (asNoTracking)
+        {
+            query = query.AsNoTracking();
+        }
+
+        return query;
+    }
+
+    private async Task<IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition>> ApplyAutomaticOrderTransitionsFromPaymentAsync(
+        Payment payment,
+        PaymentStatus previousPaymentStatus,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        var order = payment.Order;
+
+        if (order is null)
+        {
+            return Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
+        }
+
+        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
+            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
+
+        if (OrderWorkflowPolicies.IsOnlinePaymentMethod(payment.PaymentMethod)
+            && payment.PaymentStatus == PaymentStatus.Failed
+            && previousPaymentStatus != PaymentStatus.Failed
+            && OrderWorkflowPolicies.CanTransitionOrderStatus(order.OrderType, order.OrderStatus, OrderStatus.Cancelled))
+        {
+            inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
+                _unitOfWork,
+                order,
+                updatedByUserId: null,
+                note: $"Order cancelled automatically because online payment failed ({source}).",
+                cancellationToken);
+            return inventoryTransitions;
+        }
+
+        if (order.OrderType == OrderType.PreOrder
+            && order.OrderStatus == OrderStatus.Pending
+            && OrderWorkflowPolicies.IsOnlinePaymentMethod(payment.PaymentMethod)
+            && payment.PaymentStatus == PaymentStatus.Completed
+            && previousPaymentStatus != PaymentStatus.Completed
+            && OrderWorkflowPolicies.CanMovePreOrderToAwaitingStock(order.Payments)
+            && OrderWorkflowPolicies.CanTransitionOrderStatus(
+                order.OrderType,
+                order.OrderStatus,
+                OrderStatus.AwaitingStock))
+        {
+            var now = DateTime.UtcNow;
+            order.OrderStatus = OrderStatus.AwaitingStock;
+            order.UpdatedAt = now;
+            order.OrderStatusHistories.Add(new OrderStatusHistory
+            {
+                OrderStatus = OrderStatus.AwaitingStock,
+                UpdatedByUserId = null,
+                Note = "Order moved to awaiting stock automatically after successful online payment.",
+                UpdatedAt = now
+            });
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+
+        return inventoryTransitions;
+    }
+
+    private async Task NotifyBackInStockTransitionsAsync(
+        IEnumerable<OrderWorkflowMutations.InventoryQuantityTransition> transitions,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        foreach (var transition in transitions)
+        {
+            await _backInStockNotificationService.HandleStockChangeAsync(
+                transition.VariantId,
+                transition.PreviousQuantity,
+                transition.CurrentQuantity,
+                source,
+                cancellationToken);
+        }
     }
 
     private static IOrderedQueryable<Payment> ApplySorting(IQueryable<Payment> query, string? sortBy, bool descending)

@@ -7,7 +7,7 @@ public class PrescriptionsSummaryResponse
 
     public int Approved { get; set; }                 // Số đơn đã được duyệt (Approved)
 
-    public int NeedMoreInfo { get; set; }             // Số đơn cần bổ sung thông tin (NeedMoreInfo)
+    public int NeedMoreInfo { get; set; }             // Deprecated field, always 0 in current runtime flow
 
     public int Rejected { get; set; }                 // Số đơn bị từ chối (Rejected)
 }
