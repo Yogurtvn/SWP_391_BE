@@ -29,4 +29,7 @@ public class CheckoutOrderRequest
     [Required]
     [MaxLength(20)]
     public string PaymentMethod { get; set; } = string.Empty;
+
+    [MaxLength(255)]
+    public string? VoucherCode { get; set; }
 }

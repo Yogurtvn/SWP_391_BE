@@ -13,6 +13,8 @@ namespace ServiceLayer.Services.Catalog;
 public class PromotionService(IUnitOfWork unitOfWork) : IPromotionService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
+    private const int DefaultAvailablePromotionLimit = 20;
+    private const int MaxAvailablePromotionLimit = 100;
 
     public async Task<PagedResult<PromotionResponse>> GetPromotionsAsync(PaginationRequest request, CancellationToken cancellationToken = default)
     {
@@ -29,6 +31,27 @@ public class PromotionService(IUnitOfWork unitOfWork) : IPromotionService
             pagedResult.Page,
             pagedResult.PageSize,
             pagedResult.TotalItems);
+    }
+
+    public async Task<IReadOnlyList<PromotionResponse>> GetAvailablePromotionsAsync(int limit = DefaultAvailablePromotionLimit, CancellationToken cancellationToken = default)
+    {
+        var repository = _unitOfWork.Repository<Promotion>();
+        var now = DateTime.UtcNow;
+        var normalizedLimit = Math.Clamp(limit, 1, MaxAvailablePromotionLimit);
+        var promotions = (await repository.FindAsync(
+                filter: promotion =>
+                    promotion.IsActive &&
+                    promotion.StartAt <= now &&
+                    promotion.EndAt >= now,
+                orderBy: query => query
+                    .OrderByDescending(promotion => promotion.DiscountPercent)
+                    .ThenBy(promotion => promotion.EndAt)
+                    .ThenBy(promotion => promotion.PromotionId),
+                tracked: false))
+            .Take(normalizedLimit)
+            .ToList();
+
+        return promotions.Select(MapToResponse).ToList();
     }
 
     public async Task<PromotionResponse> GetPromotionByIdAsync(int id, CancellationToken cancellationToken = default)

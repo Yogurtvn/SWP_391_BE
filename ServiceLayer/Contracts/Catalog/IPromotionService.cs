@@ -7,6 +7,7 @@ namespace ServiceLayer.Contracts.Catalog;
 public interface IPromotionService
 {
     Task<PagedResult<PromotionResponse>> GetPromotionsAsync(PaginationRequest request, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<PromotionResponse>> GetAvailablePromotionsAsync(int limit = 20, CancellationToken cancellationToken = default);
     Task<PromotionResponse> GetPromotionByIdAsync(int id, CancellationToken cancellationToken = default);
     Task<PromotionResponse> CreatePromotionAsync(CreatePromotionRequest request, CancellationToken cancellationToken = default);
     Task<PromotionResponse> UpdatePromotionAsync(int id, UpdatePromotionRequest request, CancellationToken cancellationToken = default);

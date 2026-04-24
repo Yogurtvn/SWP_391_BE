@@ -48,6 +48,7 @@ public class OrderService(
         var shippingAddress = NormalizeRequiredText(request.ShippingAddress, "shippingAddress");
         var shippingFee = NormalizeMoney(request.ShippingFee, "shippingFee");
         var paymentMethod = ParsePaymentMethod(request.PaymentMethod);
+        var voucherCode = NormalizeText(request.VoucherCode);
         var cartItemIds = PrepareCartItemIds(request.CartItemIds);
         var now = DateTime.UtcNow;
 
@@ -73,6 +74,8 @@ public class OrderService(
         var requestedOrderType = ParseCheckoutOrderType(request.OrderType);
         var orderType = ResolveCheckoutOrderType(cartItems, requestedOrderType);
         var orderItems = BuildCheckoutOrderItems(userId, cartItems, orderType, now);
+        var appliedVoucher = await ResolveCheckoutVoucherAsync(voucherCode, now, cancellationToken);
+        var voucherDiscountAmount = CalculateVoucherDiscount(orderItems, appliedVoucher);
         var result = await CreateOrderAsync(
             userId,
             orderType,
@@ -82,6 +85,7 @@ public class OrderService(
             paymentMethod,
             orderItems,
             shippingFee,
+            voucherDiscountAmount,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cartItemsToRemove: cartItems,
@@ -164,6 +168,7 @@ public class OrderService(
                 }
             ],
             shippingFee: 0m,
+            orderLevelDiscountAmount: 0m,
             createdByUserId: userId,
             requestPayOsInitialization: paymentMethod == PaymentMethod.PayOS,
             cancellationToken: cancellationToken);
@@ -671,6 +676,7 @@ public class OrderService(
         PaymentMethod paymentMethod,
         IReadOnlyList<OrderCreationItem> items,
         decimal shippingFee,
+        decimal orderLevelDiscountAmount,
         int createdByUserId,
         bool requestPayOsInitialization,
         IReadOnlyCollection<CartItem>? cartItemsToRemove = null,
@@ -682,7 +688,10 @@ public class OrderService(
         }
 
         var now = DateTime.UtcNow;
-        var initialOrderStatus = OrderStatus.Pending;
+        var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
+        var initialOrderStatus = orderType == OrderType.PreOrder
+            ? OrderStatus.AwaitingStock
+            : OrderStatus.Pending;
         var order = new Order
         {
             UserId = userId,
@@ -766,7 +775,9 @@ public class OrderService(
                 });
             }
 
-            order.TotalAmount += shippingFee;
+            var itemsTotalAmount = order.TotalAmount;
+            var preDiscountTotal = itemsTotalAmount + shippingFee;
+            order.TotalAmount = Math.Max(0m, preDiscountTotal - normalizedOrderLevelDiscount);
             payment.Amount = order.TotalAmount;
             order.Payments.Add(payment);
 
@@ -934,6 +945,67 @@ public class OrderService(
                 };
             })
             .ToList();
+    }
+
+    private async Task<CheckoutVoucher?> ResolveCheckoutVoucherAsync(
+        string? voucherCode,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(voucherCode))
+        {
+            return null;
+        }
+
+        var activePromotions = await _dbContext.Promotions
+            .AsNoTracking()
+            .Where(promotion =>
+                promotion.IsActive &&
+                promotion.StartAt <= now &&
+                promotion.EndAt >= now)
+            .ToListAsync(cancellationToken);
+
+        Promotion? matchedPromotion = null;
+
+        if (int.TryParse(voucherCode, out var promotionId) && promotionId > 0)
+        {
+            matchedPromotion = activePromotions.FirstOrDefault(promotion => promotion.PromotionId == promotionId);
+        }
+
+        matchedPromotion ??= activePromotions.FirstOrDefault(promotion =>
+            string.Equals(promotion.Name, voucherCode, StringComparison.OrdinalIgnoreCase));
+
+        if (matchedPromotion is null)
+        {
+            throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_VOUCHER", "Voucher is invalid or expired");
+        }
+
+        return new CheckoutVoucher(
+            matchedPromotion.PromotionId,
+            matchedPromotion.Name,
+            matchedPromotion.DiscountPercent);
+    }
+
+    private static decimal CalculateVoucherDiscount(
+        IReadOnlyCollection<OrderCreationItem> orderItems,
+        CheckoutVoucher? voucher)
+    {
+        if (voucher is null || voucher.DiscountPercent <= 0m)
+        {
+            return 0m;
+        }
+
+        var itemsTotalAmount = orderItems.Sum(item => item.LineTotal);
+
+        if (itemsTotalAmount <= 0m)
+        {
+            return 0m;
+        }
+
+        var rawDiscount = itemsTotalAmount * voucher.DiscountPercent / 100m;
+        var roundedDiscount = decimal.Round(rawDiscount, 2, MidpointRounding.AwayFromZero);
+
+        return Math.Min(itemsTotalAmount, Math.Max(0m, roundedDiscount));
     }
 
     private static void ValidatePrescriptionDetail(CartPrescriptionDetail detail)
@@ -1521,6 +1593,11 @@ public class OrderService(
     {
         return new ApiException((int)statusCode, errorCode, message, details);
     }
+
+    private sealed record CheckoutVoucher(
+        int PromotionId,
+        string Name,
+        decimal DiscountPercent);
 
     private sealed class OrderCreationItem
     {
