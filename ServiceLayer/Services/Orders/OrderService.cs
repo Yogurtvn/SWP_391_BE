@@ -259,14 +259,12 @@ public class OrderService(
 
         if (request.FromDate.HasValue)
         {
-            var fromDate = request.FromDate.Value.Date;
-            query = query.Where(order => order.CreatedAt >= fromDate);
+            query = query.Where(order => order.CreatedAt >= request.FromDate.Value);
         }
 
         if (request.ToDate.HasValue)
         {
-            var toDateExclusive = request.ToDate.Value.Date.AddDays(1);
-            query = query.Where(order => order.CreatedAt < toDateExclusive);
+            query = query.Where(order => order.CreatedAt <= request.ToDate.Value);
         }
 
         var page = Math.Max(request.Page, PaginationRequest.DefaultPage);
