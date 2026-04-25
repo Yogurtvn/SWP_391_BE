@@ -7,6 +7,12 @@ namespace ServiceLayer.Utilities;
 internal static class OrderWorkflowMutations
 {
     internal readonly record struct InventoryQuantityTransition(int VariantId, int PreviousQuantity, int CurrentQuantity);
+    internal readonly record struct PreOrderProcessingTransitionResult(bool Succeeded, string FailureReason)
+    {
+        public static readonly PreOrderProcessingTransitionResult Success = new(true, string.Empty);
+
+        public static PreOrderProcessingTransitionResult Failed(string failureReason) => new(false, failureReason);
+    }
 
     public static async Task<IReadOnlyCollection<InventoryQuantityTransition>> CancelOrderAsync(
         IUnitOfWork unitOfWork,
@@ -90,7 +96,7 @@ internal static class OrderWorkflowMutations
         return inventoryTransitions.Values.ToArray();
     }
 
-    public static async Task<bool> MovePreOrderAwaitingStockToProcessingInternalAsync(
+    public static async Task<PreOrderProcessingTransitionResult> MovePreOrderAwaitingStockToProcessingInternalAsync(
         IUnitOfWork unitOfWork,
         Order order,
         OrderStatusTransitionContext transitionContext,
@@ -99,7 +105,7 @@ internal static class OrderWorkflowMutations
     {
         if (transitionContext is not (OrderStatusTransitionContext.StockReceiptWorkflow or OrderStatusTransitionContext.VariantUpdateWorkflow))
         {
-            return false;
+            return PreOrderProcessingTransitionResult.Failed("Transition context is not supported.");
         }
 
         if (!OrderWorkflowPolicies.CanTransitionOrderStatus(
@@ -108,7 +114,34 @@ internal static class OrderWorkflowMutations
                 OrderStatus.Processing,
                 transitionContext))
         {
-            return false;
+            return PreOrderProcessingTransitionResult.Failed("Transition policy rejected this request.");
+        }
+
+        var requiredQuantities = OrderWorkflowPolicies.GetRequiredVariantQuantities(order);
+
+        if (requiredQuantities.Count == 0)
+        {
+            return PreOrderProcessingTransitionResult.Failed("Order has no items to reserve inventory.");
+        }
+
+        foreach (var requirement in requiredQuantities)
+        {
+            if (requirement.Value <= 0)
+            {
+                return PreOrderProcessingTransitionResult.Failed(
+                    $"Order has invalid required quantity for variant {requirement.Key}.");
+            }
+
+            var reserved = await unitOfWork.TryDeductInventoryAsync(
+                requirement.Key,
+                requirement.Value,
+                cancellationToken);
+
+            if (!reserved)
+            {
+                return PreOrderProcessingTransitionResult.Failed(
+                    $"Inventory deduction failed for variant {requirement.Key}.");
+            }
         }
 
         var now = DateTime.UtcNow;
@@ -123,7 +156,7 @@ internal static class OrderWorkflowMutations
         });
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return true;
+        return PreOrderProcessingTransitionResult.Success;
     }
 
     private static bool ShouldRestoreInventoryOnCancel(Order order)

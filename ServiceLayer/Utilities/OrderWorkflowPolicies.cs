@@ -241,15 +241,17 @@ internal static class OrderWorkflowPolicies
             return true;
         }
 
+        // Soft pre-check only: final reservation must happen via atomic deduction in mutation step.
         var requiredQuantities = GetRequiredVariantQuantities(order);
+        var availableQuantities = order.OrderItems
+            .GroupBy(orderItem => orderItem.VariantId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(orderItem => orderItem.Variant.Inventory?.Quantity ?? 0).FirstOrDefault());
 
         foreach (var requirement in requiredQuantities)
         {
-            var inventoryQuantity = order.OrderItems
-                .Where(orderItem => orderItem.VariantId == requirement.Key)
-                .Select(orderItem => orderItem.Variant.Inventory?.Quantity ?? 0)
-                .DefaultIfEmpty(0)
-                .First();
+            var inventoryQuantity = availableQuantities.GetValueOrDefault(requirement.Key);
 
             if (inventoryQuantity < requirement.Value)
             {
