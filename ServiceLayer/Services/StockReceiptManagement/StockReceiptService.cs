@@ -89,7 +89,12 @@ public class StockReceiptService(
             source: "stock-receipt:create",
             cancellationToken);
 
-        return MapToDto(stockReceipt!);
+        var createdReceipt = await receiptRepository.GetFirstOrDefaultAsync(
+            receipt => receipt.ReceiptId == stockReceipt!.ReceiptId,
+            includeProperties: "Staff",
+            tracked: false);
+
+        return MapToDto(createdReceipt ?? stockReceipt!);
     }
 
     public async Task<PagedResult<StockReceiptListDtoResponse>> GetStockReceiptsAsync(
@@ -112,6 +117,7 @@ public class StockReceiptService(
                 (!fromDate.HasValue || receipt.ReceivedDate >= fromDate.Value) &&
                 (!toDate.HasValue || receipt.ReceivedDate <= toDate.Value),
             orderBy: query => query.OrderByDescending(receipt => receipt.ReceivedDate),
+            includeProperties: "Staff",
             tracked: false,
             cancellationToken: cancellationToken);
 
@@ -129,7 +135,10 @@ public class StockReceiptService(
     public async Task<StockReceiptDtoResponse?> GetStockReceiptByIdAsync(int receiptId, CancellationToken cancellationToken = default)
     {
         var repository = _unitOfWork.Repository<RepositoryLayer.Entities.StockReceipt>();
-        var stockReceipt = await repository.GetByIdAsync(receiptId);
+        var stockReceipt = await repository.GetFirstOrDefaultAsync(
+            receipt => receipt.ReceiptId == receiptId,
+            includeProperties: "Staff",
+            tracked: false);
 
         return stockReceipt is null ? null : MapToDto(stockReceipt);
     }
@@ -141,7 +150,10 @@ public class StockReceiptService(
             ReceiptId = stockReceipt.ReceiptId,
             VariantId = stockReceipt.VariantId,
             QuantityReceived = stockReceipt.QuantityReceived,
-            Note = stockReceipt.Note
+            Note = stockReceipt.Note,
+            RecordedByUserId = stockReceipt.Staff?.UserId ?? stockReceipt.StaffId,
+            RecordedByName = stockReceipt.Staff?.FullName,
+            RecordedByRole = stockReceipt.Staff?.Role.ToString()
         };
     }
 
@@ -152,7 +164,10 @@ public class StockReceiptService(
             ReceiptId = stockReceipt.ReceiptId,
             VariantId = stockReceipt.VariantId,
             QuantityReceived = stockReceipt.QuantityReceived,
-            ReceivedDate = stockReceipt.ReceivedDate
+            ReceivedDate = stockReceipt.ReceivedDate,
+            RecordedByUserId = stockReceipt.Staff?.UserId ?? stockReceipt.StaffId,
+            RecordedByName = stockReceipt.Staff?.FullName,
+            RecordedByRole = stockReceipt.Staff?.Role.ToString()
         };
     }
 }
