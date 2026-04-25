@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using RepositoryLayer.Data;
 using RepositoryLayer.Interfaces;
@@ -27,6 +28,24 @@ public class UnitOfWork(OnlineEyewearDbContext context) : IUnitOfWork
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         return _context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken = default)
+    {
+        if (requestedQuantity <= 0)
+        {
+            return false;
+        }
+
+        var affectedRows = await _context.Inventory
+            .Where(inventory => inventory.VariantId == variantId && inventory.Quantity >= requestedQuantity)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(
+                    inventory => inventory.Quantity,
+                    inventory => inventory.Quantity - requestedQuantity),
+                cancellationToken);
+
+        return affectedRows == 1;
     }
 
     public async Task BeginTransactionAsync(CancellationToken cancellationToken = default)

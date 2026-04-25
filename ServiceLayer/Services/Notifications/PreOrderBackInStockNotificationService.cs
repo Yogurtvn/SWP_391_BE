@@ -104,8 +104,7 @@ public class PreOrderBackInStockNotificationService(
                         var eligibility = await EvaluateAutoTransitionEligibilityAsync(
                             item.Order,
                             transitionContext,
-                            source,
-                            cancellationToken);
+                            source);
 
                         if (!eligibility.CanTransition)
                         {
@@ -183,8 +182,7 @@ public class PreOrderBackInStockNotificationService(
         var eligibility = await EvaluateAutoTransitionEligibilityAsync(
             order,
             transitionContext,
-            source,
-            cancellationToken);
+            source);
 
         if (!eligibility.CanTransition)
         {
@@ -204,20 +202,21 @@ public class PreOrderBackInStockNotificationService(
                 ? "Order moved to processing automatically after stock receipt and back-in-stock email."
                 : "Order moved to processing automatically after variant stock restoration and back-in-stock email.";
 
-            var transitioned = await OrderWorkflowMutations.MovePreOrderAwaitingStockToProcessingInternalAsync(
+            var transitionResult = await OrderWorkflowMutations.MovePreOrderAwaitingStockToProcessingInternalAsync(
                 _unitOfWork,
                 order,
                 transitionContext,
                 note,
                 cancellationToken);
 
-            if (!transitioned)
+            if (!transitionResult.Succeeded)
             {
                 await _unitOfWork.RollbackTransactionAsync(cancellationToken);
-                _logger.LogInformation(
-                    "Preorder auto transition skipped by internal lock. Source: {Source}, OrderId: {OrderId}",
+                _logger.LogWarning(
+                    "Preorder auto transition blocked. Source: {Source}, OrderId: {OrderId}, Reason: {Reason}",
                     source,
-                    order.OrderId);
+                    order.OrderId,
+                    transitionResult.FailureReason);
                 return;
             }
 
@@ -242,8 +241,7 @@ public class PreOrderBackInStockNotificationService(
     private async Task<(bool CanTransition, string Reason)> EvaluateAutoTransitionEligibilityAsync(
         Order order,
         OrderStatusTransitionContext transitionContext,
-        string source,
-        CancellationToken cancellationToken)
+        string source)
     {
         if (!OrderWorkflowPolicies.CanTransitionOrderStatus(
                 order.OrderType,
@@ -261,11 +259,10 @@ public class PreOrderBackInStockNotificationService(
 
         if (!OrderWorkflowPolicies.HasSufficientInventoryForPreOrder(order))
         {
-            return (false, "inventory is insufficient");
+            return (false, "inventory pre-check is insufficient");
         }
 
-        if (transitionContext == OrderStatusTransitionContext.StockReceiptWorkflow
-            && !await HasValidStockReceiptForOrderAsync(order))
+        if (!await HasValidStockReceiptForOrderAsync(order))
         {
             return (false, "valid stock receipt is missing");
         }
@@ -297,18 +294,52 @@ public class PreOrderBackInStockNotificationService(
     private async Task<bool> HasValidStockReceiptForOrderAsync(Order order)
     {
         var stockReceiptRepository = _unitOfWork.Repository<StockReceipt>();
-        var variantIds = OrderWorkflowPolicies.GetRequiredVariantQuantities(order).Keys;
+        var requiredVariantQuantities = OrderWorkflowPolicies.GetRequiredVariantQuantities(order);
+        if (requiredVariantQuantities.Count == 0)
+        {
+            return false;
+        }
+
+        var variantIds = requiredVariantQuantities.Keys.ToArray();
+        var guardStartDate = ResolveStockReceiptGuardStartDate(order);
+        var stockReceipts = await stockReceiptRepository.FindAsync(
+            filter: receipt =>
+                variantIds.Contains(receipt.VariantId)
+                && receipt.QuantityReceived > 0
+                && receipt.ReceivedDate >= guardStartDate,
+            tracked: false);
+
+        var coveredVariantIds = stockReceipts
+            .Select(receipt => receipt.VariantId)
+            .Distinct()
+            .ToHashSet();
 
         foreach (var variantId in variantIds)
         {
-            var hasReceipt = await stockReceiptRepository.ExistsAsync(receipt => receipt.VariantId == variantId);
-            if (!hasReceipt)
+            if (!coveredVariantIds.Contains(variantId))
             {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private static DateTime ResolveStockReceiptGuardStartDate(Order order)
+    {
+        var latestAwaitingStockEntry = order.OrderStatusHistories
+            .Where(history => history.OrderStatus == OrderStatus.AwaitingStock)
+            .OrderByDescending(history => history.UpdatedAt)
+            .FirstOrDefault();
+
+        if (latestAwaitingStockEntry is null)
+        {
+            return order.CreatedAt;
+        }
+
+        return latestAwaitingStockEntry.UpdatedAt > order.CreatedAt
+            ? latestAwaitingStockEntry.UpdatedAt
+            : order.CreatedAt;
     }
 
     private static BackInStockRecipient? MapRecipient(Order order, int variantId)
