@@ -52,7 +52,7 @@ public class PayOsGatewayClient(
         var description = NormalizeDescription(request.Description, request.PaymentId);
         var items = new List<ItemData>
         {
-            new($"Thanh toan don hang {request.OrderId}", 1, amount)
+            new($"Thanh toán đơn hàng {request.OrderId}", 1, amount)
         };
 
         var paymentData = new PaymentData(

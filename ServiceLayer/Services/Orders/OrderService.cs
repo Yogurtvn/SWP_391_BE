@@ -228,14 +228,12 @@ public class OrderService(
 
         if (request.FromDate.HasValue)
         {
-            var fromDate = request.FromDate.Value.Date;
-            query = query.Where(order => order.CreatedAt >= fromDate);
+            query = query.Where(order => order.CreatedAt >= request.FromDate.Value);
         }
 
         if (request.ToDate.HasValue)
         {
-            var toDateExclusive = request.ToDate.Value.Date.AddDays(1);
-            query = query.Where(order => order.CreatedAt < toDateExclusive);
+            query = query.Where(order => order.CreatedAt <= request.ToDate.Value);
         }
 
         var page = Math.Max(request.Page, PaginationRequest.DefaultPage);
@@ -689,9 +687,7 @@ public class OrderService(
 
         var now = DateTime.UtcNow;
         var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
-        var initialOrderStatus = orderType == OrderType.PreOrder
-            ? OrderStatus.AwaitingStock
-            : OrderStatus.Pending;
+        var initialOrderStatus = OrderStatus.Pending;
         var order = new Order
         {
             UserId = userId,
