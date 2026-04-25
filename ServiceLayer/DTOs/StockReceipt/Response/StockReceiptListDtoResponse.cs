@@ -11,4 +11,10 @@ public class StockReceiptListDtoResponse
     public int QuantityReceived { get; set; }       // Số lượng hàng đã nhập
 
     public DateTime ReceivedDate { get; set; }      // Ngày nhận hàng
+
+    public int? RecordedByUserId { get; set; }      // UserId người nhập hàng (DB vẫn lưu ở StaffId)
+
+    public string? RecordedByName { get; set; }     // Họ tên người nhập hàng
+
+    public string? RecordedByRole { get; set; }     // Vai trò thực tế người nhập hàng (Admin/Staff)
 }
