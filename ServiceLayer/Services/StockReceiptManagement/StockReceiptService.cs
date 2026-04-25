@@ -150,6 +150,7 @@ public class StockReceiptService(
             ReceiptId = stockReceipt.ReceiptId,
             VariantId = stockReceipt.VariantId,
             QuantityReceived = stockReceipt.QuantityReceived,
+            ReceivedDate = stockReceipt.ReceivedDate,
             Note = stockReceipt.Note,
             RecordedByUserId = stockReceipt.Staff?.UserId ?? stockReceipt.StaffId,
             RecordedByName = stockReceipt.Staff?.FullName,
