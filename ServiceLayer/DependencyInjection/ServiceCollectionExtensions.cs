@@ -52,6 +52,10 @@ namespace ServiceLayer.DependencyInjection;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    /// Đăng ký tất cả các dịch vụ (Services) của ServiceLayer vào hệ thống Dependency Injection.
+    /// Giúp quản lý vòng đời của các object và giảm sự phụ thuộc giữa các lớp.
+    /// </summary>
     public static IServiceCollection AddServiceLayer(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddRepositoryLayer(configuration);

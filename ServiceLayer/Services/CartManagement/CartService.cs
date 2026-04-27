@@ -12,6 +12,9 @@ using System.Net;
 
 namespace ServiceLayer.Services.CartManagement;
 
+/// <summary>
+/// Dịch vụ quản lý giỏ hàng của người dùng, bao gồm thêm sản phẩm thường và sản phẩm có đơn thuốc.
+/// </summary>
 public class CartService(
     IUnitOfWork unitOfWork,
     IPrescriptionPricingService prescriptionPricingService) : ICartService
@@ -19,6 +22,9 @@ public class CartService(
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
 
+    /// <summary>
+    /// Lấy chi tiết giỏ hàng hiện tại của người dùng.
+    /// </summary>
     public async Task<CartDetailResponse> GetMyCartAsync(int userId, CancellationToken cancellationToken = default)
     {
         var cart = await GetCartAsync(
@@ -34,6 +40,9 @@ public class CartService(
         return MapCart(cart);
     }
 
+    /// <summary>
+    /// Xóa toàn bộ sản phẩm trong giỏ hàng.
+    /// </summary>
     public async Task<MessageResponse> ClearMyCartAsync(int userId, CancellationToken cancellationToken = default)
     {
         var cart = await GetCartAsync(
@@ -84,6 +93,9 @@ public class CartService(
         };
     }
 
+    /// <summary>
+    /// Thêm một sản phẩm tiêu chuẩn (không có đơn thuốc) vào giỏ hàng.
+    /// </summary>
     public async Task<StandardCartItemCreatedResponse> AddStandardItemAsync(
         int userId,
         AddStandardCartItemRequest request,
@@ -164,6 +176,9 @@ public class CartService(
         }
     }
 
+    /// <summary>
+    /// Cập nhật số lượng của một sản phẩm tiêu chuẩn trong giỏ hàng.
+    /// </summary>
     public async Task<StandardCartItemUpdatedResponse> UpdateStandardItemAsync(
         int userId,
         int cartItemId,
@@ -245,6 +260,9 @@ public class CartService(
         };
     }
 
+    /// <summary>
+    /// Thêm sản phẩm có cấu hình đơn thuốc (kính thuốc) vào giỏ hàng.
+    /// </summary>
     public async Task<PrescriptionCartItemCreatedResponse> AddPrescriptionItemAsync(
         int userId,
         UpsertPrescriptionCartItemRequest request,

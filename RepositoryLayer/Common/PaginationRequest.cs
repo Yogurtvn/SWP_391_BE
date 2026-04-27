@@ -1,5 +1,8 @@
 namespace RepositoryLayer.Common;
 
+/// <summary>
+/// Lớp chứa yêu cầu phân trang từ Client (Trang số mấy và bao nhiêu bản ghi một trang).
+/// </summary>
 public class PaginationRequest
 {
     public const int DefaultPage = 1;

@@ -7,6 +7,9 @@ using ServiceLayer.Exceptions;
 
 namespace ControllerLayer.Controllers;
 
+/// <summary>
+/// Controller xử lý các yêu cầu HTTP liên quan đến Đơn hàng (Checkout, BuyNow, Tra cứu đơn hàng).
+/// </summary>
 [Route("api/orders")]
 [ApiController]
 public class OrdersController(IOrderService orderService) : ApiControllerBase
@@ -15,6 +18,9 @@ public class OrdersController(IOrderService orderService) : ApiControllerBase
 
     [Authorize(Roles = "Customer")]
     [HttpPost("checkout")]
+    /// <summary>
+    /// API Đặt hàng từ giỏ hàng.
+    /// </summary>
     public async Task<ActionResult<CheckoutOrderResponse>> Checkout(
         [FromBody] CheckoutOrderRequest request,
         CancellationToken cancellationToken)
@@ -37,6 +43,9 @@ public class OrdersController(IOrderService orderService) : ApiControllerBase
 
     [Authorize(Roles = "Customer")]
     [HttpPost("buy-now")]
+    /// <summary>
+    /// API Mua ngay một sản phẩm cụ thể.
+    /// </summary>
     public async Task<ActionResult<BuyNowOrderResponse>> BuyNow(
         [FromBody] BuyNowOrderRequest request,
         CancellationToken cancellationToken)
@@ -59,6 +68,9 @@ public class OrdersController(IOrderService orderService) : ApiControllerBase
 
     [Authorize(Roles = "Customer,Staff,Admin")]
     [HttpGet]
+    /// <summary>
+    /// API Lấy danh sách đơn hàng (có phân quyền và bộ lọc).
+    /// </summary>
     public async Task<ActionResult> GetOrders(
         [FromQuery] GetOrdersRequest request,
         CancellationToken cancellationToken)
@@ -118,6 +130,9 @@ public class OrdersController(IOrderService orderService) : ApiControllerBase
 
     [Authorize(Roles = "Customer")]
     [HttpPatch("{orderId:int}/cancel")]
+    /// <summary>
+    /// API Hủy đơn hàng.
+    /// </summary>
     public async Task<ActionResult<OrderCancelResponse>> CancelOrder(
         int orderId,
         [FromBody] CancelOrderRequest request,

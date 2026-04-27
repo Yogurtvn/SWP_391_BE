@@ -6,6 +6,9 @@ using ServiceLayer.Exceptions;
 
 namespace ControllerLayer.Controllers;
 
+/// <summary>
+/// Controller xử lý các yêu cầu HTTP liên quan đến xác thực (Đăng ký, Đăng nhập, Logout).
+/// </summary>
 [Route("api/auth")]
 [ApiController]
 public class AuthController(IAuthService authService) : ApiControllerBase
@@ -14,6 +17,9 @@ public class AuthController(IAuthService authService) : ApiControllerBase
 
     [AllowAnonymous]
     [HttpPost("register")]
+    /// <summary>
+    /// API Đăng ký tài khoản mới.
+    /// </summary>
     public async Task<ActionResult<RegisterResponse>> Register([FromBody] RegisterRequest request, CancellationToken cancellationToken)
     {
         try
@@ -33,6 +39,9 @@ public class AuthController(IAuthService authService) : ApiControllerBase
 
     [AllowAnonymous]
     [HttpPost("login")]
+    /// <summary>
+    /// API Đăng nhập bằng Email và Password.
+    /// </summary>
     public async Task<ActionResult<AuthResponse>> Login([FromBody] LoginRequest request, CancellationToken cancellationToken)
     {
         try
@@ -52,6 +61,9 @@ public class AuthController(IAuthService authService) : ApiControllerBase
 
     [AllowAnonymous]
     [HttpPost("google-login")]
+    /// <summary>
+    /// API Đăng nhập bằng Google.
+    /// </summary>
     public async Task<ActionResult<AuthResponse>> GoogleLogin([FromBody] GoogleLoginRequest request, CancellationToken cancellationToken)
     {
         try
@@ -75,6 +87,9 @@ public class AuthController(IAuthService authService) : ApiControllerBase
 
     [AllowAnonymous]
     [HttpPost("refresh-tokens")]
+    /// <summary>
+    /// API Làm mới Access Token khi hết hạn.
+    /// </summary>
     public async Task<ActionResult<RefreshTokenResponse>> RefreshTokens([FromBody] RefreshTokenRequest request, CancellationToken cancellationToken)
     {
         try

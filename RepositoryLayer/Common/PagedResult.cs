@@ -1,5 +1,9 @@
 namespace RepositoryLayer.Common;
 
+/// <summary>
+/// Lớp chứa kết quả trả về sau khi phân trang.
+/// Bao gồm danh sách dữ liệu của trang hiện tại và các thông tin meta về trang.
+/// </summary>
 public class PagedResult<T>
 {
     public IReadOnlyList<T> Items { get; init; } = [];

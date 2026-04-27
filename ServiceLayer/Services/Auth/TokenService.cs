@@ -9,23 +9,31 @@ using System.Text;
 
 namespace ServiceLayer.Services.Auth;
 
+/// <summary>
+/// Dịch vụ xử lý liên quan đến JWT Token (JSON Web Token).
+/// JWT gồm 3 phần: Header (Thuật toán), Payload (Dữ liệu/Claims), Signature (Chữ ký bảo mật).
+/// </summary>
 public class TokenService(IConfiguration configuration) : ITokenService
 {
-    private const string AccessTokenType = "access";
-    private const string RefreshTokenType = "refresh";
+    private const string AccessTokenType = "access"; // Token dùng để truy cập API (thời hạn ngắn)
+    private const string RefreshTokenType = "refresh"; // Token dùng để lấy Access Token mới (thời hạn dài)
 
     private readonly IConfiguration _configuration = configuration;
 
+    /// <summary>
+    /// Tạo Access Token chứa các thông tin định danh của người dùng (Claims).
+    /// </summary>
     public string GenerateAccessToken(User user)
     {
+        // Claims là các mẩu thông tin về người dùng được nhúng vào trong Token
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, user.UserId.ToString()),
-            new(ClaimTypes.Email, user.Email),
-            new(ClaimTypes.Name, user.FullName ?? string.Empty),
-            new(ClaimTypes.Role, user.Role.ToString()),
-            new(TokenClaimNames.TokenType, AccessTokenType),
-            new(TokenClaimNames.TokenVersion, user.TokenVersion.ToString(CultureInfo.InvariantCulture))
+            new(ClaimTypes.NameIdentifier, user.UserId.ToString()), // ID người dùng
+            new(ClaimTypes.Email, user.Email), // Email
+            new(ClaimTypes.Name, user.FullName ?? string.Empty), // Tên đầy đủ
+            new(ClaimTypes.Role, user.Role.ToString()), // Quyền hạn (Admin/Staff/Customer)
+            new(TokenClaimNames.TokenType, AccessTokenType), // Phân loại token
+            new(TokenClaimNames.TokenVersion, user.TokenVersion.ToString(CultureInfo.InvariantCulture)) // Phiên bản token (dùng để thu hồi token khi đổi pass)
         };
 
         return GenerateToken(claims, DateTime.UtcNow.AddMinutes(GetAccessExpiryInMinutes()));
@@ -44,6 +52,10 @@ public class TokenService(IConfiguration configuration) : ITokenService
         return GenerateToken(claims, DateTime.UtcNow.AddDays(GetRefreshExpiryInDays()));
     }
 
+    /// <summary>
+    /// Giải mã và kiểm tra tính hợp lệ của Refresh Token.
+    /// Nếu token hợp lệ, trả về đối tượng Principal chứa các Claims.
+    /// </summary>
     public ClaimsPrincipal? GetPrincipalFromRefreshToken(string refreshToken)
     {
         if (string.IsNullOrWhiteSpace(refreshToken))
@@ -55,11 +67,13 @@ public class TokenService(IConfiguration configuration) : ITokenService
 
         try
         {
+            // Thực hiện validate chữ ký, nhà phát hành, khán giả và thời gian hết hạn
             var principal = tokenHandler.ValidateToken(
                 refreshToken.Trim(),
                 BuildTokenValidationParameters(validateLifetime: true),
                 out _);
 
+            // Kiểm tra xem đây có đúng là loại Refresh Token không
             var tokenType = principal.FindFirst(TokenClaimNames.TokenType)?.Value;
             return string.Equals(tokenType, RefreshTokenType, StringComparison.Ordinal)
                 ? principal
@@ -67,6 +81,7 @@ public class TokenService(IConfiguration configuration) : ITokenService
         }
         catch
         {
+            // Nếu token sai chữ ký hoặc hết hạn, ValidateToken sẽ ném lỗi và ta trả về null
             return null;
         }
     }

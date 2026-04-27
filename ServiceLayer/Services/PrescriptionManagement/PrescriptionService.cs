@@ -14,6 +14,9 @@ using System.Net;
 
 namespace ServiceLayer.Services.PrescriptionManagement;
 
+/// <summary>
+/// Dịch vụ quản lý đơn thuốc (Prescription), bao gồm tra cứu, xem chi tiết và phê duyệt đơn thuốc.
+/// </summary>
 public class PrescriptionService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
@@ -30,6 +33,9 @@ public class PrescriptionService(
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
+    /// <summary>
+    /// Lấy danh sách các đơn thuốc với bộ lọc và phân trang.
+    /// </summary>
     public async Task<PagedResult<PrescriptionListItemResponse>> GetPrescriptionsAsync(
         GetPrescriptionsRequest request,
         CancellationToken cancellationToken = default)
@@ -79,6 +85,7 @@ public class PrescriptionService(
         query = ApplySorting(query, request.SortBy, sortDescending);
 
         var totalItems = await query.CountAsync(cancellationToken);
+        // Thực hiện phân trang: Skip bỏ qua các bản ghi trang trước, Take lấy số bản ghi trang hiện tại
         var items = await query
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -88,6 +95,7 @@ public class PrescriptionService(
                 UserId = prescription.UserId,
                 CustomerName = prescription.User.FullName,
                 CustomerEmail = prescription.User.Email,
+                // Lấy OrderId đầu tiên liên quan đến đơn thuốc này (nếu có)
                 OrderId = prescription.OrderItems
                     .OrderBy(item => item.OrderItemId)
                     .Select(item => (int?)item.OrderId)
@@ -97,15 +105,20 @@ public class PrescriptionService(
                 LensMaterial = prescription.LensMaterial,
                 TotalLensPrice = prescription.TotalLensPrice,
                 PrescriptionImageUrl = prescription.PrescriptionImage,
+                // Chuyển đổi Enum từ Database sang chuỗi API thân thiện cho Frontend
                 PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
                 Notes = prescription.Notes,
                 CreatedAt = prescription.CreatedAt
             })
             .ToListAsync(cancellationToken);
 
+        // Trả về đối tượng PagedResult chứa cả dữ liệu và thông tin phân trang (Tổng số trang, HasNextPage,...)
         return PagedResult<PrescriptionListItemResponse>.Create(items, page, pageSize, totalItems);
     }
 
+    /// <summary>
+    /// Lấy thông tin chi tiết của một đơn thuốc cụ thể theo ID.
+    /// </summary>
     public async Task<PrescriptionDetailResponse?> GetPrescriptionByIdAsync(
         int prescriptionId,
         CancellationToken cancellationToken = default)
@@ -159,6 +172,10 @@ public class PrescriptionService(
             };
     }
 
+    /// <summary>
+    /// Nhân viên thực hiện duyệt hoặc từ chối đơn thuốc. 
+    /// Nếu từ chối, các đơn hàng liên quan sẽ bị hủy tự động.
+    /// </summary>
     public async Task<PrescriptionStatusResponse> ReviewPrescriptionAsync(
         int staffUserId,
         int prescriptionId,
@@ -190,26 +207,32 @@ public class PrescriptionService(
 
         try
         {
+            // Bắt đầu một Transaction để đảm bảo tính toàn vẹn dữ liệu: 
+            // Nếu cập nhật trạng thái đơn thuốc thành công nhưng hủy đơn hàng lỗi thì cả quá trình sẽ bị hủy bỏ (Rollback).
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
             var now = DateTime.UtcNow;
-            prescription.PrescriptionStatus = prescriptionStatus;
-            prescription.StaffId = staffUserId;
+            prescription.PrescriptionStatus = prescriptionStatus; // Cập nhật trạng thái mới (Approved/Rejected)
+            prescription.StaffId = staffUserId; // Ghi nhận nhân viên nào thực hiện duyệt
             prescription.Notes = NormalizeOptionalNote(request.Notes);
             prescription.VerifiedAt = prescriptionStatus is PrescriptionStatus.Approved or PrescriptionStatus.Rejected
                 ? now
                 : null;
 
+            // Lưu thay đổi trạng thái đơn thuốc vào DB
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             if (prescriptionStatus == PrescriptionStatus.Rejected)
             {
+                // LUỒNG QUAN TRỌNG: Nếu đơn thuốc bị từ chối, hệ thống tự động tìm và hủy các đơn hàng liên quan.
+                // Điều này giúp tránh việc đơn hàng vẫn ở trạng thái "Chờ xử lý" khi đơn thuốc đã bị bác bỏ.
                 inventoryTransitions = await CancelOrdersForRejectedPrescriptionAsync(
                     prescriptionId,
                     staffUserId,
                     cancellationToken);
             }
 
+            // Xác nhận hoàn tất tất cả các thay đổi vào Database
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
         catch
@@ -272,6 +295,7 @@ public class PrescriptionService(
         int staffUserId,
         CancellationToken cancellationToken)
     {
+        // Tìm tất cả đơn hàng thuộc loại "Kính thuốc" (OrderType.Prescription) có chứa đơn thuốc bị từ chối này
         var orders = await _dbContext.Orders
             .Include(current => current.OrderItems)
                 .ThenInclude(item => item.Variant)
@@ -288,6 +312,7 @@ public class PrescriptionService(
 
         foreach (var order in orders)
         {
+            // Kiểm tra chính sách nghiệp vụ (Workflow Policy) xem đơn hàng hiện tại có được phép chuyển sang trạng thái "Cancelled" không
             if (!OrderWorkflowPolicies.CanTransitionOrderStatus(
                     order.OrderType,
                     order.OrderStatus,
@@ -296,6 +321,7 @@ public class PrescriptionService(
                 continue;
             }
 
+            // Thực hiện logic hủy đơn hàng (Hoàn tiền nếu đã thanh toán, cập nhật lịch sử trạng thái)
             var orderTransitions = await OrderWorkflowMutations.CancelOrderAsync(
                 _unitOfWork,
                 order,
@@ -303,6 +329,7 @@ public class PrescriptionService(
                 "Order cancelled automatically because prescription was rejected.",
                 cancellationToken);
 
+            // Ghi nhận sự thay đổi tồn kho để gửi thông báo cho khách hàng sau đó
             foreach (var transition in orderTransitions)
             {
                 if (mergedTransitions.TryGetValue(transition.VariantId, out var existingTransition))

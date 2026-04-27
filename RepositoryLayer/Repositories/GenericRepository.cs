@@ -6,6 +6,10 @@ using System.Linq.Expressions;
 
 namespace RepositoryLayer.Repositories;
 
+/// <summary>
+/// Triển khai cụ thể của Generic Repository bằng Entity Framework Core.
+/// Giúp tái sử dụng các thao tác CRUD cơ bản cho mọi Entity trong Database.
+/// </summary>
 public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepository<T>
     where T : class
 {
@@ -17,6 +21,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         return await DbSet.FindAsync(id);
     }
 
+    // Lấy toàn bộ dữ liệu của một bảng (Thận trọng khi dùng với bảng lớn)
     public async Task<IEnumerable<T>> GetAllAsync()
     {
         return await DbSet.ToListAsync();
@@ -32,6 +37,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         return await query.ToListAsync();
     }
 
+    // Phương thức phân trang cốt lõi
     public async Task<PagedResult<T>> GetPagedAsync(
         PaginationRequest paginationRequest,
         Expression<Func<T, bool>>? filter = null,
@@ -42,16 +48,20 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
     {
         ArgumentNullException.ThrowIfNull(paginationRequest);
 
+        // 1. Đếm tổng số bản ghi thỏa mãn điều kiện lọc (trước khi phân trang)
         var totalItems = await BuildQuery(filter, string.Empty, tracked: false)
             .CountAsync(cancellationToken);
 
+        // 2. Xây dựng query bao gồm các bảng liên quan và sắp xếp
         IQueryable<T> query = ApplyOrdering(BuildQuery(filter, includeProperties, tracked), orderBy);
 
+        // 3. Thực hiện phân trang tại Database level bằng Skip và Take (Tối ưu hiệu năng)
         var items = await query
             .Skip((paginationRequest.Page - 1) * paginationRequest.PageSize)
             .Take(paginationRequest.PageSize)
             .ToListAsync(cancellationToken);
 
+        // 4. Đóng gói kết quả vào đối tượng PagedResult
         return PagedResult<T>.Create(items, paginationRequest.Page, paginationRequest.PageSize, totalItems);
     }
 
@@ -98,6 +108,9 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         return await BuildQuery(filter, string.Empty, tracked: false).CountAsync();
     }
 
+    /// <summary>
+    /// Xây dựng câu truy vấn dựa trên các điều kiện lọc, include properties và tracking.
+    /// </summary>
     private IQueryable<T> BuildQuery(
         Expression<Func<T, bool>>? filter,
         string includeProperties,
@@ -107,14 +120,15 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
 
         if (!tracked)
         {
-            query = query.AsNoTracking();
+            query = query.AsNoTracking(); // Không theo dõi thay đổi để tăng hiệu năng (Read-only)
         }
 
         if (filter is not null)
         {
-            query = query.Where(filter);
+            query = query.Where(filter); // Lọc dữ liệu theo điều kiện
         }
 
+        // Tự động Include các bảng liên quan (Join)
         foreach (var includeProperty in includeProperties.Split(',', StringSplitOptions.RemoveEmptyEntries))
         {
             query = query.Include(includeProperty.Trim());
@@ -122,7 +136,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
 
         if (!string.IsNullOrWhiteSpace(includeProperties) && Context.Database.IsRelational())
         {
-            query = query.AsSplitQuery();
+            query = query.AsSplitQuery(); // Sử dụng Split Query để tránh bùng nổ dữ liệu khi Join nhiều bảng
         }
 
         return query;

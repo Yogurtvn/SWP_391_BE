@@ -3,6 +3,9 @@ using System.Linq.Expressions;
 
 namespace RepositoryLayer.Interfaces;
 
+/// <summary>
+/// Giao diện cho Generic Repository pattern, cung cấp các phương thức CRUD cơ bản cho bất kỳ thực thể (entity) nào.
+/// </summary>
 public interface IGenericRepository<T> where T : class
 {
     Task<T?> GetByIdAsync(object id);
@@ -15,6 +18,9 @@ public interface IGenericRepository<T> where T : class
         string includeProperties = "",
         bool tracked = true);
 
+    /// <summary>
+    /// Lấy danh sách thực thể có phân trang (Pagination).
+    /// </summary>
     Task<PagedResult<T>> GetPagedAsync(
         PaginationRequest paginationRequest,
         Expression<Func<T, bool>>? filter = null,

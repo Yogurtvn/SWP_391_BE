@@ -11,6 +11,7 @@ using System.Security.Claims;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
+// Lấy các cấu hình JWT từ appsettings.json
 var jwtIssuer = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Issuer");
 var jwtAudience = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Audience");
 var jwtKey = GetRequiredConfigurationValue(builder.Configuration, "Jwt:Key");
@@ -19,6 +20,7 @@ var swaggerEnabled = builder.Configuration.GetValue<bool>("Swagger:Enabled");
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
+// Cấu hình CORS để cho phép Frontend truy cập API
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy =>
@@ -28,6 +30,7 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod();
     });
 });
+// Cấu hình Swagger để kiểm thử API
 builder.Services.AddSwaggerGen(options =>
 {
     options.CustomSchemaIds(type => type.FullName!.Replace("+", "."));
@@ -57,7 +60,9 @@ builder.Services.AddSwaggerGen(options =>
         }
     });
 });
+// Đăng ký các dịch vụ của ServiceLayer vào Dependency Injection
 builder.Services.AddServiceLayer(builder.Configuration);
+// Cấu hình Authentication sử dụng JWT Bearer
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
