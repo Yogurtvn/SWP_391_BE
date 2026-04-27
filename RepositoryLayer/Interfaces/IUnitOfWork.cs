@@ -1,5 +1,8 @@
 namespace RepositoryLayer.Interfaces;
 
+/// <summary>
+/// Giao diện cho Unit of Work pattern, giúp quản lý các repository và transaction đồng nhất.
+/// </summary>
 public interface IUnitOfWork : IDisposable
 {
     IGenericRepository<T> Repository<T>() where T : class;

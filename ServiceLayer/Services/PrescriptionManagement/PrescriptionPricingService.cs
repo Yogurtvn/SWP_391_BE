@@ -6,10 +6,16 @@ using System.Net;
 
 namespace ServiceLayer.Services.PrescriptionManagement;
 
+/// <summary>
+/// Dịch vụ tính toán giá cho kính thuốc dựa trên gọng kính, loại tròng, chất liệu và các lớp phủ (coatings).
+/// </summary>
 public class PrescriptionPricingService(IOptions<PrescriptionPricingOptions> options) : IPrescriptionPricingService
 {
     private readonly PrescriptionPricingOptions _options = options.Value;
 
+    /// <summary>
+    /// Thực hiện tính toán tổng chi phí cho một cấu hình kính thuốc.
+    /// </summary>
     public PrescriptionPriceCalculation Calculate(
         decimal framePrice,
         decimal lensBasePrice,
@@ -35,6 +41,7 @@ public class PrescriptionPricingService(IOptions<PrescriptionPricingOptions> opt
             "lensMaterial",
             errorCode,
             errorMessage);
+        // Tính toán chi phí lớp phủ bằng cách cộng dồn giá của từng loại lớp phủ đã chọn
         var coatingPrice = normalizedCoatings.Sum(coating =>
             ResolveOptionPrice(
                 coating,
@@ -42,7 +49,7 @@ public class PrescriptionPricingService(IOptions<PrescriptionPricingOptions> opt
                 "coatings",
                 errorCode,
                 errorMessage));
-        var lensPrice = lensBasePrice + materialPrice + coatingPrice;
+        var lensPrice = lensBasePrice + materialPrice + coatingPrice; // Tổng giá tròng kính = Giá gốc + Phụ phí chất liệu + Phụ phí lớp phủ
 
         return new PrescriptionPriceCalculation
         {

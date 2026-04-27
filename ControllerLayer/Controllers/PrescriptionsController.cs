@@ -7,6 +7,9 @@ using ServiceLayer.Exceptions;
 
 namespace ControllerLayer.Controllers;
 
+/// <summary>
+/// Controller xử lý các yêu cầu HTTP liên quan đến việc quản lý và duyệt đơn thuốc.
+/// </summary>
 [Route("api/prescriptions")]
 [ApiController]
 public class PrescriptionsController(IPrescriptionService prescriptionService) : ApiControllerBase
@@ -15,6 +18,9 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
 
     [Authorize(Roles = "Staff,Admin")]
     [HttpGet]
+    /// <summary>
+    /// API Lấy danh sách các đơn thuốc (Dành cho Admin/Staff).
+    /// </summary>
     public async Task<ActionResult> GetPrescriptions(
         [FromQuery] GetPrescriptionsRequest request,
         CancellationToken cancellationToken)
@@ -55,6 +61,9 @@ public class PrescriptionsController(IPrescriptionService prescriptionService) :
 
     [Authorize(Roles = "Staff,Admin")]
     [HttpPatch("{prescriptionId:int}/review")]
+    /// <summary>
+    /// API Phê duyệt hoặc từ chối một đơn thuốc.
+    /// </summary>
     public async Task<ActionResult<PrescriptionStatusResponse>> ReviewPrescription(
         int prescriptionId,
         [FromBody] ReviewPrescriptionRequest request,

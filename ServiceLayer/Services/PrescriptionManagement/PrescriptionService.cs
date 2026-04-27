@@ -14,6 +14,9 @@ using System.Net;
 
 namespace ServiceLayer.Services.PrescriptionManagement;
 
+/// <summary>
+/// Dịch vụ quản lý đơn thuốc (Prescription), bao gồm tra cứu, xem chi tiết và phê duyệt đơn thuốc.
+/// </summary>
 public class PrescriptionService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
@@ -30,6 +33,9 @@ public class PrescriptionService(
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
+    /// <summary>
+    /// Lấy danh sách các đơn thuốc với bộ lọc và phân trang.
+    /// </summary>
     public async Task<PagedResult<PrescriptionListItemResponse>> GetPrescriptionsAsync(
         GetPrescriptionsRequest request,
         CancellationToken cancellationToken = default)
@@ -106,6 +112,9 @@ public class PrescriptionService(
         return PagedResult<PrescriptionListItemResponse>.Create(items, page, pageSize, totalItems);
     }
 
+    /// <summary>
+    /// Lấy thông tin chi tiết của một đơn thuốc cụ thể theo ID.
+    /// </summary>
     public async Task<PrescriptionDetailResponse?> GetPrescriptionByIdAsync(
         int prescriptionId,
         CancellationToken cancellationToken = default)
@@ -159,6 +168,10 @@ public class PrescriptionService(
             };
     }
 
+    /// <summary>
+    /// Nhân viên thực hiện duyệt hoặc từ chối đơn thuốc. 
+    /// Nếu từ chối, các đơn hàng liên quan sẽ bị hủy tự động.
+    /// </summary>
     public async Task<PrescriptionStatusResponse> ReviewPrescriptionAsync(
         int staffUserId,
         int prescriptionId,
@@ -204,6 +217,7 @@ public class PrescriptionService(
 
             if (prescriptionStatus == PrescriptionStatus.Rejected)
             {
+                // Nếu đơn thuốc bị từ chối, tự động hủy các đơn hàng đi kèm
                 inventoryTransitions = await CancelOrdersForRejectedPrescriptionAsync(
                     prescriptionId,
                     staffUserId,

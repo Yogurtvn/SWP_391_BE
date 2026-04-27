@@ -6,6 +6,10 @@ using System.Linq.Expressions;
 
 namespace RepositoryLayer.Repositories;
 
+/// <summary>
+/// Triển khai cụ thể của Generic Repository bằng Entity Framework Core.
+/// Giúp tái sử dụng các thao tác CRUD cơ bản cho mọi Entity trong Database.
+/// </summary>
 public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepository<T>
     where T : class
 {
@@ -98,6 +102,9 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         return await BuildQuery(filter, string.Empty, tracked: false).CountAsync();
     }
 
+    /// <summary>
+    /// Xây dựng câu truy vấn dựa trên các điều kiện lọc, include properties và tracking.
+    /// </summary>
     private IQueryable<T> BuildQuery(
         Expression<Func<T, bool>>? filter,
         string includeProperties,
@@ -107,14 +114,15 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
 
         if (!tracked)
         {
-            query = query.AsNoTracking();
+            query = query.AsNoTracking(); // Không theo dõi thay đổi để tăng hiệu năng (Read-only)
         }
 
         if (filter is not null)
         {
-            query = query.Where(filter);
+            query = query.Where(filter); // Lọc dữ liệu theo điều kiện
         }
 
+        // Tự động Include các bảng liên quan (Join)
         foreach (var includeProperty in includeProperties.Split(',', StringSplitOptions.RemoveEmptyEntries))
         {
             query = query.Include(includeProperty.Trim());
@@ -122,7 +130,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
 
         if (!string.IsNullOrWhiteSpace(includeProperties) && Context.Database.IsRelational())
         {
-            query = query.AsSplitQuery();
+            query = query.AsSplitQuery(); // Sử dụng Split Query để tránh bùng nổ dữ liệu khi Join nhiều bảng
         }
 
         return query;

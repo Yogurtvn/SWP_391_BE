@@ -6,12 +6,20 @@ using RepositoryLayer.Repositories;
 
 namespace RepositoryLayer.UnitOfWork;
 
+/// <summary>
+/// Triển khai Unit of Work pattern.
+/// Đảm bảo tất cả các thay đổi trên nhiều repository được thực hiện trong cùng một transaction (nguyên tử).
+/// </summary>
 public class UnitOfWork(OnlineEyewearDbContext context) : IUnitOfWork
 {
     private readonly OnlineEyewearDbContext _context = context;
     private readonly Dictionary<Type, object> _repositories = new();
     private IDbContextTransaction? _transaction;
 
+    /// <summary>
+    /// Lấy hoặc tạo mới một Repository cho thực thể loại T.
+    /// Sử dụng cơ chế lưu trữ nội bộ (Dictionary) để đảm bảo mỗi loại thực thể chỉ có một repository duy nhất.
+    /// </summary>
     public IGenericRepository<T> Repository<T>() where T : class
     {
         var entityType = typeof(T);
@@ -25,11 +33,17 @@ public class UnitOfWork(OnlineEyewearDbContext context) : IUnitOfWork
         return (IGenericRepository<T>)repository;
     }
 
+    /// <summary>
+    /// Lưu tất cả thay đổi vào database.
+    /// </summary>
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         return _context.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Thực hiện trừ tồn kho một cách an toàn (Atomic update) để tránh lỗi tranh chấp (Race condition).
+    /// </summary>
     public async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken = default)
     {
         if (requestedQuantity <= 0)
