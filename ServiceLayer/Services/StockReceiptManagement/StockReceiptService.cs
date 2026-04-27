@@ -145,12 +145,16 @@ public class StockReceiptService(
 
     private static StockReceiptDtoResponse MapToDto(RepositoryLayer.Entities.StockReceipt stockReceipt)
     {
+        var receivedDateUtc = stockReceipt.ReceivedDate.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(stockReceipt.ReceivedDate, DateTimeKind.Utc)
+            : stockReceipt.ReceivedDate.ToUniversalTime();
+
         return new StockReceiptDtoResponse
         {
             ReceiptId = stockReceipt.ReceiptId,
             VariantId = stockReceipt.VariantId,
             QuantityReceived = stockReceipt.QuantityReceived,
-            ReceivedDate = stockReceipt.ReceivedDate,
+            ReceivedDate = receivedDateUtc,
             Note = stockReceipt.Note,
             RecordedByUserId = stockReceipt.Staff?.UserId ?? stockReceipt.StaffId,
             RecordedByName = stockReceipt.Staff?.FullName,
@@ -160,12 +164,16 @@ public class StockReceiptService(
 
     private static StockReceiptListDtoResponse MapToListDto(RepositoryLayer.Entities.StockReceipt stockReceipt)
     {
+        var receivedDateUtc = stockReceipt.ReceivedDate.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(stockReceipt.ReceivedDate, DateTimeKind.Utc)
+            : stockReceipt.ReceivedDate.ToUniversalTime();
+
         return new StockReceiptListDtoResponse
         {
             ReceiptId = stockReceipt.ReceiptId,
             VariantId = stockReceipt.VariantId,
             QuantityReceived = stockReceipt.QuantityReceived,
-            ReceivedDate = stockReceipt.ReceivedDate,
+            ReceivedDate = receivedDateUtc,
             RecordedByUserId = stockReceipt.Staff?.UserId ?? stockReceipt.StaffId,
             RecordedByName = stockReceipt.Staff?.FullName,
             RecordedByRole = stockReceipt.Staff?.Role.ToString()
