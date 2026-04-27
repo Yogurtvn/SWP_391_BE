@@ -9,13 +9,19 @@ using System.Text;
 
 namespace ServiceLayer.Services.Auth;
 
+/// <summary>
+/// Dịch vụ xử lý liên quan đến JWT Token (Access Token và Refresh Token).
+/// </summary>
 public class TokenService(IConfiguration configuration) : ITokenService
 {
-    private const string AccessTokenType = "access";
-    private const string RefreshTokenType = "refresh";
+    private const string AccessTokenType = "access"; // Định nghĩa loại token truy cập
+    private const string RefreshTokenType = "refresh"; // Định nghĩa loại token làm mới (refresh)
 
     private readonly IConfiguration _configuration = configuration;
 
+    /// <summary>
+    /// Tạo Access Token cho người dùng dựa trên thông tin User.
+    /// </summary>
     public string GenerateAccessToken(User user)
     {
         var claims = new List<Claim>
@@ -28,9 +34,13 @@ public class TokenService(IConfiguration configuration) : ITokenService
             new(TokenClaimNames.TokenVersion, user.TokenVersion.ToString(CultureInfo.InvariantCulture))
         };
 
+        // Trả về token đã được ký với thời gian hết hạn lấy từ cấu hình
         return GenerateToken(claims, DateTime.UtcNow.AddMinutes(GetAccessExpiryInMinutes()));
     }
 
+    /// <summary>
+    /// Tạo Refresh Token để người dùng có thể lấy Access Token mới mà không cần đăng nhập lại.
+    /// </summary>
     public string GenerateRefreshToken(User user)
     {
         var claims = new List<Claim>
@@ -44,6 +54,9 @@ public class TokenService(IConfiguration configuration) : ITokenService
         return GenerateToken(claims, DateTime.UtcNow.AddDays(GetRefreshExpiryInDays()));
     }
 
+    /// <summary>
+    /// Giải mã và kiểm tra tính hợp lệ của Refresh Token để lấy thông tin người dùng (Principal).
+    /// </summary>
     public ClaimsPrincipal? GetPrincipalFromRefreshToken(string refreshToken)
     {
         if (string.IsNullOrWhiteSpace(refreshToken))
@@ -71,6 +84,9 @@ public class TokenService(IConfiguration configuration) : ITokenService
         }
     }
 
+    /// <summary>
+    /// Hàm dùng chung để tạo chuỗi JWT Token từ danh sách Claims và thời gian hết hạn.
+    /// </summary>
     private string GenerateToken(IEnumerable<Claim> claims, DateTime expiresAtUtc)
     {
         var issuer = GetRequiredConfigurationValue("Jwt:Issuer");
@@ -86,6 +102,7 @@ public class TokenService(IConfiguration configuration) : ITokenService
             expires: expiresAtUtc,
             signingCredentials: credentials);
 
+        // Chuyển đối tượng token thành chuỗi ký tự JWT
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
@@ -133,6 +150,9 @@ public class TokenService(IConfiguration configuration) : ITokenService
         return 7;
     }
 
+    /// <summary>
+    /// Lấy giá trị cấu hình bắt buộc từ file appsettings.json, ném lỗi nếu thiếu.
+    /// </summary>
     private string GetRequiredConfigurationValue(string key)
     {
         var value = _configuration[key];

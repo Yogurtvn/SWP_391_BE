@@ -17,6 +17,9 @@ using System.Net;
 
 namespace ServiceLayer.Services.Orders;
 
+/// <summary>
+/// Dịch vụ quản lý đơn hàng (Order), bao gồm Thanh toán, Mua ngay, Hủy đơn và Cập nhật trạng thái.
+/// </summary>
 public class OrderService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
@@ -36,6 +39,9 @@ public class OrderService(
     private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
+    /// <summary>
+    /// Thực hiện quy trình đặt hàng từ giỏ hàng (Checkout).
+    /// </summary>
     public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
         CheckoutOrderRequest request,
@@ -101,6 +107,9 @@ public class OrderService(
         };
     }
 
+    /// <summary>
+    /// Thực hiện quy trình mua ngay một sản phẩm mà không cần qua giỏ hàng.
+    /// </summary>
     public async Task<BuyNowOrderResponse> BuyNowAsync(
         int userId,
         BuyNowOrderRequest request,
@@ -182,6 +191,9 @@ public class OrderService(
         };
     }
 
+    /// <summary>
+    /// Lấy danh sách đơn hàng có phân trang và bộ lọc.
+    /// </summary>
     public async Task<PagedResult<OrderSummaryResponse>> GetOrdersAsync(
         int currentUserId,
         bool canAccessAllOrders,
@@ -284,6 +296,9 @@ public class OrderService(
         return order is null ? null : MapOrderDetail(order);
     }
 
+    /// <summary>
+    /// Hủy đơn hàng (thường do khách hàng thực hiện).
+    /// </summary>
     public async Task<OrderCancelResponse> CancelOrderAsync(
         int userId,
         int orderId,
@@ -505,6 +520,9 @@ public class OrderService(
         };
     }
 
+    /// <summary>
+    /// Cập nhật trạng thái đơn hàng (do nhân viên thực hiện).
+    /// </summary>
     public async Task<OrderStatusUpdatedResponse> UpdateOrderStatusAsync(
         int staffUserId,
         int orderId,

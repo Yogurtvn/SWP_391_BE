@@ -10,6 +10,9 @@ using InventoryEntity = RepositoryLayer.Entities.Inventory;
 
 namespace ServiceLayer.Services.InventoryManagement;
 
+/// <summary>
+/// Dịch vụ quản lý kho hàng (Inventory), bao gồm cập nhật số lượng tồn kho và cấu hình đặt trước (Pre-order).
+/// </summary>
 public class InventoryService(
     IUnitOfWork unitOfWork,
     IPreOrderBackInStockNotificationService backInStockNotificationService) : IInventoryService
@@ -17,6 +20,9 @@ public class InventoryService(
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
+    /// <summary>
+    /// Lấy danh sách tồn kho với các bộ lọc và phân trang.
+    /// </summary>
     public async Task<PagedResult<InventoryListDtoResponse>> GetInventoriesAsync(
         PaginationRequest paginationRequest,
         int? variantId,
@@ -69,6 +75,9 @@ public class InventoryService(
         return inventory is null ? null : MapToDto(inventory);
     }
 
+    /// <summary>
+    /// Cập nhật thông tin kho hàng cho một biến thể sản phẩm cụ thể.
+    /// </summary>
     public async Task<bool> UpdateInventoryAsync(int variantId, UpdateInventoryRequest request, CancellationToken cancellationToken = default)
     {
         var repository = _unitOfWork.Repository<InventoryEntity>();
@@ -89,6 +98,7 @@ public class InventoryService(
         repository.Update(inventory);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+        // Gửi thông báo cho khách hàng nếu sản phẩm có hàng trở lại (back in stock)
         await _backInStockNotificationService.HandleStockChangeAsync(
             variantId,
             previousQuantity,

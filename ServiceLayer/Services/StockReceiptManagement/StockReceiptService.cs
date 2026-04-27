@@ -8,6 +8,9 @@ using ServiceLayer.DTOs.StockReceipt.Response;
 
 namespace ServiceLayer.Services.StockReceiptManagement;
 
+/// <summary>
+/// Dịch vụ quản lý các phiếu nhập kho (Stock Receipt), ghi nhận việc nhập thêm hàng vào kho.
+/// </summary>
 public class StockReceiptService(
     IUnitOfWork unitOfWork,
     IPreOrderBackInStockNotificationService backInStockNotificationService) : IStockReceiptService
@@ -15,6 +18,9 @@ public class StockReceiptService(
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
 
+    /// <summary>
+    /// Tạo mới một phiếu nhập kho và cập nhật số lượng tồn kho tương ứng.
+    /// </summary>
     public async Task<StockReceiptDtoResponse> CreateStockReceiptAsync(
         CreateStockReceiptRequest request,
         int staffUserId,
@@ -97,6 +103,9 @@ public class StockReceiptService(
         return MapToDto(createdReceipt ?? stockReceipt!);
     }
 
+    /// <summary>
+    /// Lấy danh sách các phiếu nhập kho với bộ lọc và phân trang.
+    /// </summary>
     public async Task<PagedResult<StockReceiptListDtoResponse>> GetStockReceiptsAsync(
         PaginationRequest paginationRequest,
         int? variantId,

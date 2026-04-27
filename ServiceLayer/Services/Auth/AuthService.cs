@@ -13,6 +13,9 @@ using System.Security.Claims;
 
 namespace ServiceLayer.Services.Auth;
 
+/// <summary>
+/// Dịch vụ quản lý các tính năng xác thực như Đăng ký, Đăng nhập, Đăng nhập Google, và Đăng xuất.
+/// </summary>
 public class AuthService(
     IUnitOfWork unitOfWork,
     ITokenService tokenService,
@@ -24,6 +27,9 @@ public class AuthService(
     private readonly IPasswordHasher _passwordHasher = passwordHasher;
     private readonly IConfiguration _configuration = configuration;
 
+    /// <summary>
+    /// Đăng ký tài khoản người dùng mới.
+    /// </summary>
     public async Task<RegisterResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
     {
         var userRepository = _unitOfWork.Repository<User>();
@@ -60,6 +66,9 @@ public class AuthService(
         };
     }
 
+    /// <summary>
+    /// Đăng nhập bằng Email và Mật khẩu.
+    /// </summary>
     public async Task<AuthResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
         var userRepository = _unitOfWork.Repository<User>();
@@ -81,6 +90,9 @@ public class AuthService(
         return BuildAuthResponse(user);
     }
 
+    /// <summary>
+    /// Đăng nhập thông qua tài khoản Google.
+    /// </summary>
     public async Task<AuthResponse> LoginWithGoogleAsync(string credential, CancellationToken cancellationToken = default)
     {
         var googleClientId = GetRequiredConfigurationValue("GoogleAuth:ClientId");
@@ -146,6 +158,9 @@ public class AuthService(
         return BuildAuthResponse(user);
     }
 
+    /// <summary>
+    /// Làm mới Access Token bằng Refresh Token.
+    /// </summary>
     public async Task<RefreshTokenResponse> RefreshTokensAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default)
     {
         var principal = _tokenService.GetPrincipalFromRefreshToken(request.RefreshToken);
@@ -187,6 +202,9 @@ public class AuthService(
         };
     }
 
+    /// <summary>
+    /// Đăng xuất người dùng bằng cách vô hiệu hóa Refresh Token (tăng TokenVersion).
+    /// </summary>
     public async Task<LogoutResponse> LogoutAsync(int userId, LogoutRequest request, CancellationToken cancellationToken = default)
     {
         var principal = _tokenService.GetPrincipalFromRefreshToken(request.RefreshToken);
@@ -209,7 +227,7 @@ public class AuthService(
             throw new ApiException((int)HttpStatusCode.BadRequest, "LOGOUT_FAILED", "Logout failed");
         }
 
-        user.TokenVersion++;
+        user.TokenVersion++; // Tăng version để làm các token cũ không còn hợp lệ
         userRepository.Update(user);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
@@ -219,6 +237,9 @@ public class AuthService(
         };
     }
 
+    /// <summary>
+    /// Lấy thông tin chi tiết của người dùng đang đăng nhập.
+    /// </summary>
     public async Task<CurrentUserResponse?> GetCurrentUserAsync(int userId, CancellationToken cancellationToken = default)
     {
         var userRepository = _unitOfWork.Repository<User>();
