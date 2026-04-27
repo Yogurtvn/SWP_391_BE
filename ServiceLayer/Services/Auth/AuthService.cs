@@ -101,6 +101,7 @@ public class AuthService(
             Audience = new List<string> { googleClientId }
         };
 
+        // Xác thực tính hợp lệ của Google ID Token gửi lên từ Client
         var payload = await GoogleJsonWebSignature.ValidateAsync(credential.Trim().Trim('"'), validationSettings);
 
         if (string.IsNullOrWhiteSpace(payload.Email) || string.IsNullOrWhiteSpace(payload.Subject))
@@ -111,19 +112,22 @@ public class AuthService(
         var userRepository = _unitOfWork.Repository<User>();
         var normalizedEmail = NormalizeEmail(payload.Email);
 
+        // Kiểm tra xem SubjectId (ID duy nhất của Google) đã tồn tại trong DB chưa
         var user = await userRepository.GetFirstOrDefaultAsync(currentUser => currentUser.GoogleSubjectId == payload.Subject);
 
         if (user is null)
         {
+            // Nếu chưa có SubjectId, kiểm tra theo Email (Trường hợp User đã đký trước đó bằng Email/Pass)
             user = await userRepository.GetFirstOrDefaultAsync(currentUser => currentUser.Email == normalizedEmail);
         }
 
         if (user is null)
         {
+            // Nếu hoàn toàn chưa có User, tạo mới tài khoản
             user = new User
             {
                 Email = normalizedEmail,
-                PasswordHash = _passwordHasher.Hash(Guid.NewGuid().ToString("N")),
+                PasswordHash = _passwordHasher.Hash(Guid.NewGuid().ToString("N")), // Mật khẩu ngẫu nhiên vì dùng Google login
                 FullName = payload.Name?.Trim(),
                 Phone = null,
                 Role = UserRole.Customer,
@@ -143,6 +147,7 @@ public class AuthService(
             throw new ApiException((int)HttpStatusCode.Unauthorized, "INVALID_CREDENTIALS", "Google credential is invalid or the account cannot be linked.");
         }
 
+        // Cập nhật thông tin Google Subject Id nếu User lần đầu đăng nhập bằng Google
         if (string.IsNullOrWhiteSpace(user.GoogleSubjectId))
         {
             user.GoogleSubjectId = payload.Subject;
@@ -227,7 +232,9 @@ public class AuthService(
             throw new ApiException((int)HttpStatusCode.BadRequest, "LOGOUT_FAILED", "Logout failed");
         }
 
-        user.TokenVersion++; // Tăng version để làm các token cũ không còn hợp lệ
+        // CHIẾN LƯỢC QUAN TRỌNG: Tăng TokenVersion trong DB.
+        // Khi Version trong DB khác với Version nhúng trong Token, Token đó sẽ bị coi là vô hiệu (thu hồi quyền truy cập).
+        user.TokenVersion++; 
         userRepository.Update(user);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 

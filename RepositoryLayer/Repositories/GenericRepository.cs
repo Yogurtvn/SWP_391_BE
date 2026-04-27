@@ -21,6 +21,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         return await DbSet.FindAsync(id);
     }
 
+    // Lấy toàn bộ dữ liệu của một bảng (Thận trọng khi dùng với bảng lớn)
     public async Task<IEnumerable<T>> GetAllAsync()
     {
         return await DbSet.ToListAsync();
@@ -36,6 +37,7 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
         return await query.ToListAsync();
     }
 
+    // Phương thức phân trang cốt lõi
     public async Task<PagedResult<T>> GetPagedAsync(
         PaginationRequest paginationRequest,
         Expression<Func<T, bool>>? filter = null,
@@ -46,16 +48,20 @@ public class GenericRepository<T>(OnlineEyewearDbContext context) : IGenericRepo
     {
         ArgumentNullException.ThrowIfNull(paginationRequest);
 
+        // 1. Đếm tổng số bản ghi thỏa mãn điều kiện lọc (trước khi phân trang)
         var totalItems = await BuildQuery(filter, string.Empty, tracked: false)
             .CountAsync(cancellationToken);
 
+        // 2. Xây dựng query bao gồm các bảng liên quan và sắp xếp
         IQueryable<T> query = ApplyOrdering(BuildQuery(filter, includeProperties, tracked), orderBy);
 
+        // 3. Thực hiện phân trang tại Database level bằng Skip và Take (Tối ưu hiệu năng)
         var items = await query
             .Skip((paginationRequest.Page - 1) * paginationRequest.PageSize)
             .Take(paginationRequest.PageSize)
             .ToListAsync(cancellationToken);
 
+        // 4. Đóng gói kết quả vào đối tượng PagedResult
         return PagedResult<T>.Create(items, paginationRequest.Page, paginationRequest.PageSize, totalItems);
     }
 

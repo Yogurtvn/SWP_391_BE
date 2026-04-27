@@ -19,13 +19,16 @@ public class UnitOfWork(OnlineEyewearDbContext context) : IUnitOfWork
     /// <summary>
     /// Lấy hoặc tạo mới một Repository cho thực thể loại T.
     /// Sử dụng cơ chế lưu trữ nội bộ (Dictionary) để đảm bảo mỗi loại thực thể chỉ có một repository duy nhất.
+    /// Pattern: Repository Factory - giúp quản lý việc khởi tạo repository một cách tập trung.
     /// </summary>
     public IGenericRepository<T> Repository<T>() where T : class
     {
         var entityType = typeof(T);
 
+        // Kiểm tra xem Repository cho Entity này đã được tạo chưa
         if (!_repositories.TryGetValue(entityType, out var repository))
         {
+            // Nếu chưa, khởi tạo mới và lưu vào Dictionary để dùng lại cho các lần sau
             repository = new GenericRepository<T>(_context);
             _repositories[entityType] = repository;
         }
@@ -43,6 +46,8 @@ public class UnitOfWork(OnlineEyewearDbContext context) : IUnitOfWork
 
     /// <summary>
     /// Thực hiện trừ tồn kho một cách an toàn (Atomic update) để tránh lỗi tranh chấp (Race condition).
+    /// Sử dụng ExecuteUpdateAsync để cập nhật trực tiếp vào DB mà không cần load Entity lên bộ nhớ.
+    /// Điều kiện `inventory.Quantity >= requestedQuantity` đảm bảo không bao giờ bị âm kho.
     /// </summary>
     public async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken = default)
     {
@@ -59,6 +64,7 @@ public class UnitOfWork(OnlineEyewearDbContext context) : IUnitOfWork
                     inventory => inventory.Quantity - requestedQuantity),
                 cancellationToken);
 
+        // Nếu affectedRows == 1 nghĩa là đã trừ kho thành công
         return affectedRows == 1;
     }
 
