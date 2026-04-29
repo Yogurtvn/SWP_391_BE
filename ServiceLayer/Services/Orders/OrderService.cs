@@ -75,6 +75,7 @@ public class OrderService(
         var requestedOrderType = ParseCheckoutOrderType(request.OrderType);
         var orderType = ResolveCheckoutOrderType(cartItems, requestedOrderType);
         var orderItems = BuildCheckoutOrderItems(userId, cartItems, orderType, now);
+        EnsureCheckoutInventoryAvailable(orderItems);
         var appliedVoucher = await ResolveCheckoutVoucherAsync(voucherCode, now, cancellationToken);
         var voucherDiscountAmount = CalculateVoucherDiscount(orderItems, appliedVoucher);
         var result = await CreateOrderAsync(
@@ -759,7 +760,7 @@ public class OrderService(
 
                     if (!reserved)
                     {
-                        throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
+                        throw CreateOutOfStockException();
                     }
                 }
 
@@ -1138,6 +1139,23 @@ public class OrderService(
         return distinctOrderTypes[0];
     }
 
+    private static void EnsureCheckoutInventoryAvailable(IReadOnlyCollection<OrderCreationItem> orderItems)
+    {
+        foreach (var item in orderItems)
+        {
+            if (!item.ReserveInventory)
+            {
+                continue;
+            }
+
+            var inventory = item.Variant.Inventory;
+            if (inventory is null || inventory.Quantity < item.Quantity)
+            {
+                throw CreateOutOfStockException();
+            }
+        }
+    }
+
     private static void ValidateOrderStatusTransition(
         Order order,
         OrderStatus nextOrderStatus,
@@ -1250,6 +1268,11 @@ public class OrderService(
         {
             throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
         }
+    }
+
+    private static ApiException CreateOutOfStockException()
+    {
+        return CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Selected variant is out of stock");
     }
 
     private static void CompletePaymentsForCompletedOrder(Order order, DateTime completedAt)
