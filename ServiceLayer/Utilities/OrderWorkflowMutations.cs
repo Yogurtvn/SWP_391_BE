@@ -26,12 +26,14 @@ internal static class OrderWorkflowMutations
 
         if (ShouldRestoreInventoryOnCancel(order))
         {
+            // Inventory rule: only orders that already reserved stock should return stock on cancel.
             foreach (var orderItem in order.OrderItems)
             {
                 var inventory = orderItem.Variant.Inventory;
 
                 if (inventory is null)
                 {
+                    // Why: keep inventory records consistent even when historical orders reference a variant without inventory row.
                     inventory = new Inventory
                     {
                         VariantId = orderItem.VariantId,
@@ -78,6 +80,7 @@ internal static class OrderWorkflowMutations
             UpdatedAt = now
         });
 
+        // Payment rule: unresolved payments are closed as failed when the order is cancelled.
         foreach (var payment in order.Payments.Where(payment =>
                      payment.PaymentStatus != PaymentStatus.Completed
                      && payment.PaymentStatus != PaymentStatus.Failed))
@@ -105,6 +108,7 @@ internal static class OrderWorkflowMutations
     {
         if (transitionContext is not (OrderStatusTransitionContext.StockReceiptWorkflow or OrderStatusTransitionContext.VariantUpdateWorkflow))
         {
+            // Important: this mutation is automation-only by design.
             return PreOrderProcessingTransitionResult.Failed("Transition context is not supported.");
         }
 
@@ -114,9 +118,11 @@ internal static class OrderWorkflowMutations
                 OrderStatus.Processing,
                 transitionContext))
         {
+            // Final guard: policy matrix still has authority even when workflow calls this method.
             return PreOrderProcessingTransitionResult.Failed("Transition policy rejected this request.");
         }
 
+        // Business rule: pre-order stock is reserved at this stage (AwaitingStock -> Processing), not at checkout.
         var requiredQuantities = OrderWorkflowPolicies.GetRequiredVariantQuantities(order);
 
         if (requiredQuantities.Count == 0)
@@ -139,11 +145,13 @@ internal static class OrderWorkflowMutations
 
             if (!reserved)
             {
+                // Demo note: caller is expected to rollback the transaction so partial deductions are not committed.
                 return PreOrderProcessingTransitionResult.Failed(
                     $"Inventory deduction failed for variant {requirement.Key}.");
             }
         }
 
+        // Order flow: status changes to Processing only after all required variants are deducted successfully.
         var now = DateTime.UtcNow;
         order.OrderStatus = OrderStatus.Processing;
         order.UpdatedAt = now;
@@ -161,6 +169,7 @@ internal static class OrderWorkflowMutations
 
     private static bool ShouldRestoreInventoryOnCancel(Order order)
     {
+        // Why: pre-orders do not reserve stock at creation time, so there is nothing to return on cancellation.
         return order.OrderType != OrderType.PreOrder;
     }
 }

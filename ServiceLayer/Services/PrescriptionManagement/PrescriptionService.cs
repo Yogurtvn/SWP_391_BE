@@ -19,6 +19,8 @@ public class PrescriptionService(
     OnlineEyewearDbContext dbContext,
     IPreOrderBackInStockNotificationService backInStockNotificationService) : IPrescriptionService
 {
+    // Demo note: runtime review flow supports Reviewing/Approved/Rejected only.
+    // NeedMoreInfo/Resubmit endpoints are intentionally deprecated to keep a single linear workflow.
     private static readonly HashSet<PrescriptionStatus> StaffReviewTargetStatuses =
     [
         PrescriptionStatus.Reviewing,
@@ -196,6 +198,7 @@ public class PrescriptionService(
             prescription.PrescriptionStatus = prescriptionStatus;
             prescription.StaffId = staffUserId;
             prescription.Notes = NormalizeOptionalNote(request.Notes);
+            // Business rule: verification timestamp is set only on final outcomes.
             prescription.VerifiedAt = prescriptionStatus is PrescriptionStatus.Approved or PrescriptionStatus.Rejected
                 ? now
                 : null;
@@ -204,6 +207,7 @@ public class PrescriptionService(
 
             if (prescriptionStatus == PrescriptionStatus.Rejected)
             {
+                // Important: rejecting prescription can auto-cancel linked prescription orders.
                 inventoryTransitions = await CancelOrdersForRejectedPrescriptionAsync(
                     prescriptionId,
                     staffUserId,
@@ -238,6 +242,7 @@ public class PrescriptionService(
         ArgumentNullException.ThrowIfNull(request);
         _ = cancellationToken;
 
+        // Demo note: this runtime branch is removed; the API stays only for backward-compatible error signaling.
         throw CreateApiException(
             HttpStatusCode.Gone,
             "PRESCRIPTION_FLOW_DEPRECATED",
@@ -255,6 +260,7 @@ public class PrescriptionService(
         ArgumentNullException.ThrowIfNull(request);
         _ = cancellationToken;
 
+        // Demo note: resubmit is deprecated together with request-more-info to avoid multi-branch review lifecycle.
         throw CreateApiException(
             HttpStatusCode.Gone,
             "PRESCRIPTION_FLOW_DEPRECATED",
@@ -293,6 +299,7 @@ public class PrescriptionService(
                     order.OrderStatus,
                     OrderStatus.Cancelled))
             {
+                // Guard: only orders still in cancellable states are touched.
                 continue;
             }
 
@@ -300,6 +307,7 @@ public class PrescriptionService(
                 _unitOfWork,
                 order,
                 staffUserId,
+                // Why: order can no longer be fulfilled safely after prescription rejection.
                 "Order cancelled automatically because prescription was rejected.",
                 cancellationToken);
 
