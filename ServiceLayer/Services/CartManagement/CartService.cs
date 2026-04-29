@@ -113,7 +113,7 @@ public class CartService(
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant");
         }
 
-        ValidateStandardOrderRequest(variant, orderType, quantity, requireReadyStock: hasExplicitOrderType);
+        ValidateStandardOrderRequest(variant, orderType, quantity, requireReadyStock: orderType == OrderType.Ready || hasExplicitOrderType);
 
         var now = DateTime.UtcNow;
         var cartItemRepository = _unitOfWork.Repository<CartItem>();
@@ -196,7 +196,7 @@ public class CartService(
             throw CreateInvalidCartItemException("variantId", "variantId must reference an existing active variant", "Invalid cart item data");
         }
 
-        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity, requireReadyStock: false);
+        ValidateStandardOrderRequest(cartItem.Variant, cartItem.OrderType, quantity, requireReadyStock: cartItem.OrderType == OrderType.Ready);
 
         var now = DateTime.UtcNow;
         var pricing = PromotionPricingHelper.Calculate(cartItem.Variant, now);
