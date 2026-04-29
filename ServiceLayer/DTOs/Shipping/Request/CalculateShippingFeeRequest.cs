@@ -2,18 +2,25 @@ using System.ComponentModel.DataAnnotations;
 
 namespace ServiceLayer.DTOs.Shipping.Request;
 
-/// <summary>
-/// Yêu cầu tính phí vận chuyển (Rút gọn cho module Portable)
-/// Chỉ cần thông tin địa chỉ và cân nặng.
-/// </summary>
 public class CalculateShippingFeeRequest
 {
-    [Required]
-    public int ToDistrictId { get; set; }        // Mã Quận/Huyện nhận
+    [Range(1, int.MaxValue)]
+    public int ToDistrictId { get; set; }
 
     [Required]
-    public string ToWardCode { get; set; } = string.Empty; // Mã Phường/Xã nhận
+    [MinLength(1)]
+    public string ToWardCode { get; set; } = string.Empty;
 
-    [Range(1, 50000)]
-    public int Weight { get; set; } = 200;       // Trọng lượng (gram)
+    [Required]
+    [MinLength(1)]
+    public List<CalculateShippingFeeItemRequest> Items { get; set; } = [];
+}
+
+public class CalculateShippingFeeItemRequest
+{
+    [Range(1, int.MaxValue)]
+    public int VariantId { get; set; }
+
+    [Range(1, int.MaxValue)]
+    public int Quantity { get; set; }
 }

@@ -260,7 +260,13 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
 
         modelBuilder.Entity<ProductVariant>(entity =>
         {
-            entity.ToTable("ProductVariants");
+            entity.ToTable("ProductVariants", table =>
+            {
+                table.HasCheckConstraint("CK_ProductVariants_WeightGram", "[WeightGram] > 0");
+                table.HasCheckConstraint("CK_ProductVariants_PackageLengthCm", "[PackageLengthCm] > 0");
+                table.HasCheckConstraint("CK_ProductVariants_PackageWidthCm", "[PackageWidthCm] > 0");
+                table.HasCheckConstraint("CK_ProductVariants_PackageHeightCm", "[PackageHeightCm] > 0");
+            });
             entity.HasKey(x => x.VariantId);
 
             entity.Property(x => x.Sku).HasColumnName("SKU").HasMaxLength(100).IsRequired();
@@ -268,6 +274,10 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.Size).HasMaxLength(20);
             entity.Property(x => x.Color).HasMaxLength(50);
             entity.Property(x => x.Price).HasPrecision(10, 2).IsRequired();
+            entity.Property(x => x.WeightGram).HasDefaultValue(200);
+            entity.Property(x => x.PackageLengthCm).HasDefaultValue(10);
+            entity.Property(x => x.PackageWidthCm).HasDefaultValue(10);
+            entity.Property(x => x.PackageHeightCm).HasDefaultValue(10);
             entity.Property(x => x.IsActive).HasDefaultValue(true);
 
             entity.HasIndex(x => x.Sku).IsUnique();
