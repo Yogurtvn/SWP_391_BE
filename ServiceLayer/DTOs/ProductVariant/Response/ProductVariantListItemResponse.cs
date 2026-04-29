@@ -12,6 +12,14 @@ public class ProductVariantListItemResponse
 
     public decimal Price { get; set; }
 
+    public int WeightGram { get; set; }
+
+    public int PackageLengthCm { get; set; }
+
+    public int PackageWidthCm { get; set; }
+
+    public int PackageHeightCm { get; set; }
+
     public decimal OriginalPrice { get; set; }
 
     public decimal DiscountPercent { get; set; }

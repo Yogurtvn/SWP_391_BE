@@ -16,6 +16,14 @@ public class ProductVariant
 
     public decimal Price { get; set; }
 
+    public int WeightGram { get; set; }
+
+    public int PackageLengthCm { get; set; }
+
+    public int PackageWidthCm { get; set; }
+
+    public int PackageHeightCm { get; set; }
+
     public bool IsActive { get; set; }
 
     public int? PromotionId { get; set; }

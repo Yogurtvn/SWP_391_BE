@@ -20,6 +20,18 @@ public class UpdateProductVariantRequest
     [Range(typeof(decimal), "0", "79228162514264337593543950335")]
     public decimal Price { get; set; }
 
+    [Range(1, int.MaxValue)]
+    public int WeightGram { get; set; } = 200;
+
+    [Range(1, int.MaxValue)]
+    public int PackageLengthCm { get; set; } = 10;
+
+    [Range(1, int.MaxValue)]
+    public int PackageWidthCm { get; set; } = 10;
+
+    [Range(1, int.MaxValue)]
+    public int PackageHeightCm { get; set; } = 10;
+
     [Range(0, int.MaxValue)]
     public int Quantity { get; set; }
 

@@ -102,6 +102,10 @@ public class ProductVariantService(
             Size = NormalizeText(request.Size),
             Color = NormalizeText(request.Color),
             Price = request.Price,
+            WeightGram = request.WeightGram,
+            PackageLengthCm = request.PackageLengthCm,
+            PackageWidthCm = request.PackageWidthCm,
+            PackageHeightCm = request.PackageHeightCm,
             IsActive = true
         };
 
@@ -153,6 +157,10 @@ public class ProductVariantService(
         variant.Size = NormalizeText(request.Size);
         variant.Color = NormalizeText(request.Color);
         variant.Price = request.Price;
+        variant.WeightGram = request.WeightGram;
+        variant.PackageLengthCm = request.PackageLengthCm;
+        variant.PackageWidthCm = request.PackageWidthCm;
+        variant.PackageHeightCm = request.PackageHeightCm;
         // Capture quantity delta to detect "back in stock" events after update.
         var previousQuantity = variant.Inventory?.Quantity ?? 0;
 
@@ -302,6 +310,10 @@ public class ProductVariantService(
             Color = variant.Color,
             Size = variant.Size,
             Price = variant.Price,
+            WeightGram = variant.WeightGram,
+            PackageLengthCm = variant.PackageLengthCm,
+            PackageWidthCm = variant.PackageWidthCm,
+            PackageHeightCm = variant.PackageHeightCm,
             OriginalPrice = pricing.OriginalPrice,
             DiscountPercent = pricing.DiscountPercent,
             DiscountAmount = pricing.DiscountAmount,
@@ -326,6 +338,10 @@ public class ProductVariantService(
             Size = variant.Size,
             FrameType = variant.FrameType,
             Price = variant.Price,
+            WeightGram = variant.WeightGram,
+            PackageLengthCm = variant.PackageLengthCm,
+            PackageWidthCm = variant.PackageWidthCm,
+            PackageHeightCm = variant.PackageHeightCm,
             OriginalPrice = pricing.OriginalPrice,
             DiscountPercent = pricing.DiscountPercent,
             DiscountAmount = pricing.DiscountAmount,
