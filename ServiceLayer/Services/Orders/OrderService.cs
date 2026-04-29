@@ -141,7 +141,7 @@ public class OrderService(
 
         if (variant.Inventory is null || variant.Inventory.Quantity < request.Quantity)
         {
-            throw CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Selected variant is out of stock");
+            throw CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Số lượng sản phẩm vượt quá tồn kho.");
         }
 
         var pricing = PromotionPricingHelper.Calculate(variant, now);
@@ -1272,7 +1272,7 @@ public class OrderService(
 
     private static ApiException CreateOutOfStockException()
     {
-        return CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Selected variant is out of stock");
+        return CreateApiException(HttpStatusCode.BadRequest, "OUT_OF_STOCK", "Số lượng sản phẩm vượt quá tồn kho.");
     }
 
     private static void CompletePaymentsForCompletedOrder(Order order, DateTime completedAt)
