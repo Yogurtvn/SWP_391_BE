@@ -333,6 +333,7 @@ public class PaymentService(
                     });
 
                     await _unitOfWork.SaveChangesAsync(cancellationToken);
+                    // Demo note: reconciliation reuses the same automatic order transition rules as normal updates.
                     inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                         payment,
                         previousStatus,
@@ -381,6 +382,7 @@ public class PaymentService(
                     });
 
                     await _unitOfWork.SaveChangesAsync(cancellationToken);
+                    // Payment rule: reconcile failure can auto-cancel the order when workflow policy allows.
                     inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                         payment,
                         previousStatus,
@@ -450,6 +452,7 @@ public class PaymentService(
             });
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            // Important: manual payment status patch can still trigger automatic order workflow actions.
             inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                 payment,
                 previousStatus,
@@ -719,6 +722,7 @@ public class PaymentService(
                 });
 
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
+                // Webhook success can auto-advance pre-order state once payment is completed.
                 inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                     payment,
                     previousStatus,
@@ -757,6 +761,7 @@ public class PaymentService(
             });
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            // Webhook failure can auto-cancel unpaid online orders according to policy.
             inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                 payment,
                 previousStatus,
@@ -932,6 +937,8 @@ public class PaymentService(
         IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
             Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
+        // Payment flow split: this automatic block handles online payment effects only; COD is finalized on order completion.
+        // Business rule: failed online payment can cancel the order automatically to avoid unpaid active orders.
         if (OrderWorkflowPolicies.IsOnlinePaymentMethod(payment.PaymentMethod)
             && payment.PaymentStatus == PaymentStatus.Failed
             && previousPaymentStatus != PaymentStatus.Failed
@@ -946,6 +953,7 @@ public class PaymentService(
             return inventoryTransitions;
         }
 
+        // Order flow: successful online payment moves pre-order from Pending to AwaitingStock automatically.
         if (order.OrderType == OrderType.PreOrder
             && order.OrderStatus == OrderStatus.Pending
             && OrderWorkflowPolicies.IsOnlinePaymentMethod(payment.PaymentMethod)

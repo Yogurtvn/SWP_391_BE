@@ -37,7 +37,9 @@ public class PreOrderBackInStockNotificationService(
 
         var shouldHandle =
             isStockRestorationWorkflow
+                // Stock restoration workflows care about any increase (not only crossing 0).
                 ? currentQuantity > previousQuantity
+                // Generic flows notify only when stock comes back from zero/out-of-stock.
                 : previousQuantity <= 0 && currentQuantity > 0;
 
         if (!shouldHandle)
@@ -61,6 +63,7 @@ public class PreOrderBackInStockNotificationService(
         try
         {
             var orderRepository = _unitOfWork.Repository<Order>();
+            // Only pre-orders still waiting for stock are eligible for this notification workflow.
             var preorderOrders = await orderRepository.FindAsync(
                 filter: order =>
                     order.OrderType == OrderType.PreOrder &&
@@ -101,6 +104,7 @@ public class PreOrderBackInStockNotificationService(
                 {
                     if (isStockRestorationWorkflow)
                     {
+                        // Important: for auto workflows, re-check full business eligibility before notifying and mutating.
                         var eligibility = await EvaluateAutoTransitionEligibilityAsync(
                             item.Order,
                             transitionContext,
@@ -145,6 +149,7 @@ public class PreOrderBackInStockNotificationService(
 
                     if (isStockRestorationWorkflow)
                     {
+                        // Order flow: after successful notification, workflow may auto move AwaitingStock -> Processing.
                         await TryAutoMoveAwaitingStockOrderToProcessingAsync(
                             item.Order,
                             source,
@@ -211,6 +216,7 @@ public class PreOrderBackInStockNotificationService(
 
             if (!transitionResult.Succeeded)
             {
+                // Why: keep transition atomic; no partial inventory deductions are committed when mutation fails.
                 await _unitOfWork.RollbackTransactionAsync(cancellationToken);
                 _logger.LogWarning(
                     "Preorder auto transition blocked. Source: {Source}, OrderId: {OrderId}, Reason: {Reason}",
@@ -243,6 +249,7 @@ public class PreOrderBackInStockNotificationService(
         OrderStatusTransitionContext transitionContext,
         string source)
     {
+        // Policy guard: source context must be authorized for AwaitingStock -> Processing transition.
         if (!OrderWorkflowPolicies.CanTransitionOrderStatus(
                 order.OrderType,
                 order.OrderStatus,
@@ -254,16 +261,19 @@ public class PreOrderBackInStockNotificationService(
 
         if (!OrderWorkflowPolicies.CanMovePreOrderToAwaitingStock(order.Payments))
         {
+            // Payment guard: pre-order payment checkpoint must already be satisfied.
             return (false, "payment is not ready");
         }
 
         if (!OrderWorkflowPolicies.HasSufficientInventoryForPreOrder(order))
         {
+            // Soft guard: skip costly mutation when current in-memory inventory is obviously insufficient.
             return (false, "inventory pre-check is insufficient");
         }
 
         if (!await HasValidStockReceiptForOrderAsync(order))
         {
+            // Business guard: require stock receipt evidence to explain why workflow is allowed to proceed.
             return (false, "valid stock receipt is missing");
         }
 
@@ -301,6 +311,7 @@ public class PreOrderBackInStockNotificationService(
         }
 
         var variantIds = requiredVariantQuantities.Keys.ToArray();
+        // Demo note: only receipts after entering AwaitingStock are counted for this restoration workflow.
         var guardStartDate = ResolveStockReceiptGuardStartDate(order);
         var stockReceipts = await stockReceiptRepository.FindAsync(
             filter: receipt =>
@@ -337,6 +348,7 @@ public class PreOrderBackInStockNotificationService(
             return order.CreatedAt;
         }
 
+        // Why: if order re-enters AwaitingStock later, we only trust receipts from the latest waiting period onward.
         return latestAwaitingStockEntry.UpdatedAt > order.CreatedAt
             ? latestAwaitingStockEntry.UpdatedAt
             : order.CreatedAt;

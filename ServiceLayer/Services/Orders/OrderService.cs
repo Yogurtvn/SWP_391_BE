@@ -27,6 +27,7 @@ public class OrderService(
     private const string PaymentRuleErrorCode = "ORDER_CANNOT_BE_CANCELLED";
     private const string PaymentRuleErrorMessage = "Order cannot be cancelled at current payment status";
     private const string PreOrderProcessingLockErrorCode = "PREORDER_STATUS_LOCKED";
+    // Important: AwaitingStock -> Processing is automation-only to guarantee stock restoration checks.
     private const string PreOrderProcessingLockMessage =
         "Pre-order can only move from AwaitingStock to Processing through stock restoration workflows.";
 
@@ -315,6 +316,7 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
         }
 
+        // Business rule: customer cancellation window is stricter than staff transition permissions.
         if (!OrderWorkflowPolicies.CanCustomerCancelByOrderStatus(order))
         {
             throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
@@ -323,11 +325,13 @@ public class OrderService(
         if (order.OrderType == OrderType.Prescription
             && !OrderWorkflowPolicies.IsPrescriptionCustomerCancellationWindowOpen(order))
         {
+            // Prescription rule: customer can cancel only while all prescription items are still Submitted.
             throw CreateApiException(HttpStatusCode.Conflict, "ORDER_CANNOT_BE_CANCELLED", "Order cannot be cancelled at current status");
         }
 
         if (!OrderWorkflowPolicies.CanCancelByPaymentRule(order.Payments))
         {
+            // Payment rule: completed online payment blocks direct cancellation.
             throw CreateApiException(HttpStatusCode.Conflict, PaymentRuleErrorCode, PaymentRuleErrorMessage);
         }
 
@@ -532,6 +536,7 @@ public class OrderService(
 
         if (OrderWorkflowPolicies.IsPreOrderStockRestorationTransition(order.OrderType, order.OrderStatus, nextOrderStatus))
         {
+            // Demo note: staff patch is blocked here; this transition must come from stock restoration workflows.
             throw CreateApiException(HttpStatusCode.Conflict, PreOrderProcessingLockErrorCode, PreOrderProcessingLockMessage);
         }
 
@@ -565,6 +570,7 @@ public class OrderService(
 
                 if (nextOrderStatus == OrderStatus.Completed)
                 {
+                    // Payment rule: COD is collected at completion; online must already be completed before this step.
                     CompletePaymentsForCompletedOrder(order, now);
                 }
 
@@ -687,6 +693,7 @@ public class OrderService(
 
         var now = DateTime.UtcNow;
         var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
+        // Order flow: every order starts at Pending; later guards decide automatic/manual transitions by type.
         var initialOrderStatus = OrderStatus.Pending;
         var order = new Order
         {
@@ -706,6 +713,7 @@ public class OrderService(
             Amount = 0m,
             PaymentMethod = paymentMethod,
             PaymentStatus = PaymentStatus.Pending,
+            // Important: keep an initial payment history entry for audit and retry flows.
             PaymentHistories =
             [
                 new PaymentHistory
@@ -737,6 +745,7 @@ public class OrderService(
                 {
                     var inventory = item.Variant.Inventory;
 
+                    // Why: pre-order checkout is allowed only when this variant is explicitly marked as pre-order enabled.
                     if (inventory?.IsPreOrderAllowed != true || inventory.Quantity >= item.Quantity)
                     {
                         throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
@@ -745,6 +754,7 @@ public class OrderService(
 
                 if (item.ReserveInventory)
                 {
+                    // Inventory rule: Ready/Prescription orders reserve stock immediately at checkout.
                     var reserved = await TryDeductInventoryAsync(item.Variant.VariantId, item.Quantity, cancellationToken);
 
                     if (!reserved)
@@ -890,6 +900,8 @@ public class OrderService(
                         UnitPrice = pricing.FinalPrice,
                         PromotionNameSnapshot = pricing.PromotionName,
                         LineTotal = calculatedPricing.TotalPrice,
+                        // Business rule: frame stock for prescription orders is reserved at checkout;
+                        // prescription approval controls process start, not stock reservation timing.
                         ReserveInventory = true,
                         LensTypeId = detail.LensTypeId,
                         LensPrice = calculatedPricing.LensPrice,
@@ -936,7 +948,9 @@ public class OrderService(
                     UnitPrice = pricing.FinalPrice,
                     PromotionNameSnapshot = pricing.PromotionName,
                     LineTotal = pricing.FinalPrice * item.Quantity,
+                    // Why: pre-orders do not reserve inventory at creation, they reserve later when moving to Processing.
                     ReserveInventory = orderType == OrderType.Ready,
+                    // Pre-order guard: require explicit pre-order enablement on inventory.
                     RequirePreOrderEnabled = orderType == OrderType.PreOrder
                 };
             })
@@ -1134,6 +1148,7 @@ public class OrderService(
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
+        // Final guard (business-level): pre-order can enter AwaitingStock only when payment gate is satisfied.
         if (order.OrderType == OrderType.PreOrder
             && order.OrderStatus == OrderStatus.Pending
             && nextOrderStatus == OrderStatus.AwaitingStock)
@@ -1141,6 +1156,7 @@ public class OrderService(
             EnsurePreOrderCanMoveToAwaitingStock(order);
         }
 
+        // Final guard (business-level): prescription orders cannot start processing before all approvals.
         if (order.OrderType == OrderType.Prescription
             && order.OrderStatus == OrderStatus.Pending
             && nextOrderStatus == OrderStatus.Processing)
@@ -1153,6 +1169,7 @@ public class OrderService(
     {
         if (!OrderWorkflowPolicies.CanMovePreOrderToAwaitingStock(order.Payments))
         {
+            // Payment rule: online pre-order must be paid before waiting-for-stock stage.
             throw CreateApiException(
                 HttpStatusCode.Conflict,
                 "ORDER_STATUS_GUARD_FAILED",
@@ -1164,6 +1181,7 @@ public class OrderService(
     {
         if (!OrderWorkflowPolicies.AreAllPrescriptionItemsApproved(order))
         {
+            // Prescription rule: this blocks processing until all attached prescriptions are approved.
             throw CreateApiException(
                 HttpStatusCode.Conflict,
                 "PRESCRIPTION_NOT_APPROVED",
@@ -1197,6 +1215,7 @@ public class OrderService(
 
     private async Task<bool> TryDeductInventoryAsync(int variantId, int requestedQuantity, CancellationToken cancellationToken)
     {
+        // Atomic deduct: succeeds only when enough quantity is still available at update time.
         var affectedRows = await _dbContext.Inventory
             .Where(inventory => inventory.VariantId == variantId && inventory.Quantity >= requestedQuantity)
             .ExecuteUpdateAsync(
@@ -1246,9 +1265,11 @@ public class OrderService(
 
         if (activePayments.Any(payment => payment.PaymentMethod != PaymentMethod.COD && payment.PaymentStatus != PaymentStatus.Completed))
         {
+            // Why: orders cannot complete while any online payment is still not completed.
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_ORDER_STATUS", "Invalid order status update");
         }
 
+        // COD rule: mark pending COD as completed when order is actually completed (cash collected on delivery/hand-off).
         foreach (var payment in activePayments.Where(payment =>
                      payment.PaymentMethod == PaymentMethod.COD &&
                      payment.PaymentStatus == PaymentStatus.Pending))

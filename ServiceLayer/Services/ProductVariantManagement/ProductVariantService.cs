@@ -153,6 +153,7 @@ public class ProductVariantService(
         variant.Size = NormalizeText(request.Size);
         variant.Color = NormalizeText(request.Color);
         variant.Price = request.Price;
+        // Capture quantity delta to detect "back in stock" events after update.
         var previousQuantity = variant.Inventory?.Quantity ?? 0;
 
         var inventory = variant.Inventory;
@@ -176,6 +177,7 @@ public class ProductVariantService(
             variantId,
             previousQuantity,
             currentQuantity,
+            // Important: variant update is also a stock-restoration workflow source.
             source: "variant:update",
             cancellationToken);
 

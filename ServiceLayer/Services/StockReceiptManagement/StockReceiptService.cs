@@ -59,6 +59,7 @@ public class StockReceiptService(
                 variant.Inventory = inventory;
             }
 
+            // Inventory rule: stock receipt is the authoritative source for increasing on-hand quantity.
             previousQuantity = inventory.Quantity;
             inventory.Quantity += request.QuantityReceived;
             currentQuantity = inventory.Quantity;
@@ -86,6 +87,7 @@ public class StockReceiptService(
             request.VariantId,
             previousQuantity,
             currentQuantity,
+            // Demo note: this source unlocks stock-restoration transition context for pre-orders.
             source: "stock-receipt:create",
             cancellationToken);
 

@@ -13,6 +13,7 @@ internal enum OrderStatusTransitionContext : byte
 
 internal static class OrderWorkflowPolicies
 {
+    // Business rule: Ready orders are regular in-stock orders, so they can go straight to processing.
     private static readonly Dictionary<OrderStatus, HashSet<OrderStatus>> ReadyOrderTransitions = new()
     {
         [OrderStatus.Pending] = [OrderStatus.Processing, OrderStatus.Cancelled],
@@ -22,6 +23,7 @@ internal static class OrderWorkflowPolicies
         [OrderStatus.Cancelled] = []
     };
 
+    // Business rule: Pre-orders must wait at AwaitingStock before fulfillment can actually start.
     private static readonly Dictionary<OrderStatus, HashSet<OrderStatus>> PreOrderTransitions = new()
     {
         [OrderStatus.Pending] = [OrderStatus.AwaitingStock, OrderStatus.Cancelled],
@@ -32,6 +34,7 @@ internal static class OrderWorkflowPolicies
         [OrderStatus.Cancelled] = []
     };
 
+    // Business rule: Prescription orders can only be fulfilled after prescription review is completed.
     private static readonly Dictionary<OrderStatus, HashSet<OrderStatus>> PrescriptionOrderTransitions = new()
     {
         [OrderStatus.Pending] = [OrderStatus.Processing, OrderStatus.Cancelled],
@@ -41,6 +44,7 @@ internal static class OrderWorkflowPolicies
         [OrderStatus.Cancelled] = []
     };
 
+    // Demo note: NeedMoreInfo/Resubmit runtime states are intentionally removed from active transitions.
     private static readonly Dictionary<PrescriptionStatus, HashSet<PrescriptionStatus>> PrescriptionStatusTransitions = new()
     {
         [PrescriptionStatus.Submitted] = [PrescriptionStatus.Reviewing, PrescriptionStatus.Approved, PrescriptionStatus.Rejected],
@@ -49,6 +53,7 @@ internal static class OrderWorkflowPolicies
         [PrescriptionStatus.Rejected] = []
     };
 
+    // Shipping guard: shipping updates are only valid when order is already in delivery lifecycle states.
     private static readonly Dictionary<OrderStatus, HashSet<ShippingStatus>> ShippingStatusByOrderStatus = new()
     {
         [OrderStatus.Processing] =
@@ -102,6 +107,7 @@ internal static class OrderWorkflowPolicies
             && currentStatus == OrderStatus.AwaitingStock
             && nextStatus == OrderStatus.Processing)
         {
+            // Important: staff patch cannot force this step; only stock-restoration workflows can.
             return context is OrderStatusTransitionContext.StockReceiptWorkflow or OrderStatusTransitionContext.VariantUpdateWorkflow;
         }
 
@@ -161,9 +167,11 @@ internal static class OrderWorkflowPolicies
 
         if (HasCompletedOnlinePayment(paymentList))
         {
+            // Payment rule: once online money is completed, direct cancellation is blocked by policy.
             return false;
         }
 
+        // Why: cancellation is still allowed while payment is unfinished, especially COD pending states.
         var hasNotCompletedPayment = paymentList.Any(payment => payment.PaymentStatus != PaymentStatus.Completed);
         var hasCodPending = paymentList.Any(payment =>
             payment.PaymentMethod == PaymentMethod.COD
@@ -178,9 +186,11 @@ internal static class OrderWorkflowPolicies
 
         if (!HasOnlinePayment(paymentList))
         {
+            // Why: COD pre-orders have no online settlement checkpoint before AwaitingStock.
             return true;
         }
 
+        // Business rule: online pre-orders enter AwaitingStock only after online payment is completed.
         return HasCompletedOnlinePayment(paymentList);
     }
 
@@ -208,6 +218,7 @@ internal static class OrderWorkflowPolicies
             .ToList();
 
         return prescriptions.Count > 0
+               // Customer rule: cancellation is open only while every prescription item is still Submitted.
                && prescriptions.All(prescription => prescription.PrescriptionStatus == PrescriptionStatus.Submitted);
     }
 
@@ -224,6 +235,7 @@ internal static class OrderWorkflowPolicies
             .ToList();
 
         return prescriptions.Count > 0
+               // Final guard: prescription orders cannot move to Processing until all items are approved.
                && prescriptions.All(prescription => prescription.PrescriptionStatus == PrescriptionStatus.Approved);
     }
 
