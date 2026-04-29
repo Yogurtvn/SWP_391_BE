@@ -14,6 +14,10 @@ public class Order
 
     public decimal TotalAmount { get; set; }
 
+    public decimal ShippingFee { get; set; }
+
+    public decimal VoucherDiscountAmount { get; set; }
+
     public string ReceiverName { get; set; } = string.Empty;
 
     public string ReceiverPhone { get; set; } = string.Empty;

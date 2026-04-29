@@ -391,6 +391,8 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
             entity.Property(x => x.OrderStatus).HasColumnType("tinyint");
             entity.Property(x => x.ShippingStatus).HasColumnType("tinyint");
             entity.Property(x => x.TotalAmount).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.ShippingFee).HasPrecision(10, 2).HasDefaultValue(0m);
+            entity.Property(x => x.VoucherDiscountAmount).HasPrecision(10, 2).HasDefaultValue(0m);
             entity.Property(x => x.ReceiverName).HasMaxLength(255).IsRequired();
             entity.Property(x => x.ReceiverPhone).HasMaxLength(20).IsRequired();
             entity.Property(x => x.ShippingAddress).HasMaxLength(500).IsRequired();

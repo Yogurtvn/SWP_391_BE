@@ -693,6 +693,7 @@ public class OrderService(
         }
 
         var now = DateTime.UtcNow;
+        var normalizedShippingFee = NormalizeMoney(shippingFee, "shippingFee");
         var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
         // Order flow: every order starts at Pending; later guards decide automatic/manual transitions by type.
         var initialOrderStatus = OrderStatus.Pending;
@@ -705,6 +706,8 @@ public class OrderService(
             ReceiverPhone = receiverPhone,
             ShippingAddress = shippingAddress,
             ShippingStatus = ShippingStatus.Pending,
+            ShippingFee = normalizedShippingFee,
+            VoucherDiscountAmount = normalizedOrderLevelDiscount,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -783,7 +786,7 @@ public class OrderService(
             }
 
             var itemsTotalAmount = order.TotalAmount;
-            var preDiscountTotal = itemsTotalAmount + shippingFee;
+            var preDiscountTotal = itemsTotalAmount + normalizedShippingFee;
             order.TotalAmount = Math.Max(0m, preDiscountTotal - normalizedOrderLevelDiscount);
             payment.Amount = order.TotalAmount;
             order.Payments.Add(payment);
@@ -1515,6 +1518,8 @@ public class OrderService(
             OrderType = ApiEnumMapper.ToApiOrderType(order.OrderType),
             OrderStatus = ApiEnumMapper.ToApiOrderStatus(order.OrderStatus),
             TotalAmount = order.TotalAmount,
+            ShippingFee = order.ShippingFee,
+            VoucherDiscountAmount = order.VoucherDiscountAmount,
             ReceiverName = order.ReceiverName,
             ReceiverPhone = order.ReceiverPhone,
             ShippingAddress = order.ShippingAddress,
