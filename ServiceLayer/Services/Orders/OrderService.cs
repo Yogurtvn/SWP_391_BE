@@ -204,16 +204,23 @@ public class OrderService(
             query = query.Where(order => order.UserId == currentUserId);
         }
 
+        OrderType? orderTypeFilter = null;
+
         if (!string.IsNullOrWhiteSpace(request.OrderType))
         {
-            var orderType = ParseOrderType(request.OrderType);
-            query = query.Where(order => order.OrderType == orderType);
+            orderTypeFilter = ParseOrderType(request.OrderType);
+            query = query.Where(order => order.OrderType == orderTypeFilter.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(request.OrderStatus))
         {
             var orderStatus = ParseOrderStatus(request.OrderStatus);
             query = query.Where(order => order.OrderStatus == orderStatus);
+        }
+        else if (canAccessAllOrders && orderTypeFilter == OrderType.PreOrder)
+        {
+            // Admin/staff pre-order listing defaults to waiting-for-stock queue when status is omitted.
+            query = query.Where(order => order.OrderStatus == OrderStatus.AwaitingStock);
         }
 
         if (!string.IsNullOrWhiteSpace(request.ShippingStatus))
