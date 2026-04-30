@@ -332,6 +332,7 @@ public class ProductVariantService(
 
         return new ProductVariantDetailResponse
         {
+            ProductId = variant.ProductId,
             VariantId = variant.VariantId,
             Sku = variant.Sku,
             Color = variant.Color,

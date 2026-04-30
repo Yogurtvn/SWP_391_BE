@@ -2,6 +2,8 @@ namespace ServiceLayer.DTOs.ProductVariant.Response;
 
 public class ProductVariantDetailResponse
 {
+    public int ProductId { get; set; }
+
     public int VariantId { get; set; }
 
     public string Sku { get; set; } = string.Empty;

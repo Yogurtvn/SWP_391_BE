@@ -2,6 +2,8 @@ namespace ServiceLayer.DTOs.Inventory.Response;
 
 public class InventoryDtoResponse
 {
+    public int ProductId { get; set; }
+
     public int VariantId { get; set; }
 
     public int Quantity { get; set; }

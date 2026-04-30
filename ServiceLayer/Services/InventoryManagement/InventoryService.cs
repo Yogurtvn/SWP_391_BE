@@ -123,6 +123,7 @@ public class InventoryService(
     {
         return new InventoryDtoResponse
         {
+            ProductId = inventory.Variant?.ProductId ?? 0,
             VariantId = inventory.VariantId,
             Quantity = inventory.Quantity,
             IsReadyAvailable = inventory.Quantity > 0,
@@ -136,6 +137,7 @@ public class InventoryService(
     {
         return new InventoryListDtoResponse
         {
+            ProductId = inventory.Variant.ProductId,
             VariantId = inventory.VariantId,
             Quantity = inventory.Quantity,
             IsReadyAvailable = inventory.Quantity > 0,
