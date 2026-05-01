@@ -1,4 +1,4 @@
-using RepositoryLayer.Entities;
+﻿using RepositoryLayer.Entities;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.ProductImage;
 using ServiceLayer.DTOs.Common;
@@ -65,12 +65,13 @@ public class ProductImageService(IUnitOfWork unitOfWork) : IProductImageService
             .Select((imageUrl, index) => new ProductImage
             {
                 ProductId = productId,
-                ImageUrl = imageUrl,
+                ImageUrl = imageUrl, // Gán cái URL từ Cloudinary vào thuộc tính ImageUrl của Entity
                 DisplayOrder = nextDisplayOrder + index,
                 IsPrimary = !hasPrimaryImage && index == 0
             })
             .ToList();
-
+        // Đây là bước cuối cùng, Unit of Work ra lệnh cho Database: Hãy lưu các dòng này vào bảng ProductImages
+        // Lúc này, URL chính thức nằm trong ổ cứng của Database server.
         await repository.AddRangeAsync(createdImages);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 

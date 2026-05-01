@@ -1,4 +1,4 @@
-using ControllerLayer.Models;
+﻿using ControllerLayer.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ServiceLayer.Contracts.ProductImage;
@@ -152,12 +152,16 @@ public class ProductImagesController(
         var fileName = $"{Guid.NewGuid():N}{safeExtension}";
 
         await using var stream = file.OpenReadStream();
+        // Đây là khoảnh khắc Backend "đẩy" file ảnh từ máy khách lên hệ thống đám mây Cloudinary
+        //thông qua interface IImageStorageService.
         var uploadResult = await _imageStorageService.UploadImageAsync(
             stream,
             fileName,
             GetProductFolder(productId),
             cancellationToken);
-
+        // Sau khi upload xong, Cloudinary trả về một đối tượng chứa cái URL (đường dẫn ảnh).
+        // Nếu upload thành công, chúng ta sẽ nhận được URL của ảnh đã được lưu trữ trên Cloudinary và một
+        // PublicId để quản lý ảnh đó sau này.
         return new UploadedImage(uploadResult.Url, uploadResult.PublicId);
     }
 
