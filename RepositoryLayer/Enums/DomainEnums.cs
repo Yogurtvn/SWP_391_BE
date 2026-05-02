@@ -54,7 +54,8 @@ public enum PrescriptionStatus : byte
     NeedMoreInfo = 3,
     Approved = 4,
     Rejected = 5,
-    InProduction = 6
+    InProduction = 6,
+    Cancelled = 7
 }
 
 public enum PaymentMethod : byte

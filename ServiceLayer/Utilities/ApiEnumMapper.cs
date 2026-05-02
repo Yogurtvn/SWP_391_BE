@@ -123,6 +123,7 @@ internal static class ApiEnumMapper
             "approved" => SetValue(PrescriptionStatus.Approved, out prescriptionStatus),
             "rejected" => SetValue(PrescriptionStatus.Rejected, out prescriptionStatus),
             "inproduction" => SetValue(PrescriptionStatus.InProduction, out prescriptionStatus),
+            "cancelled" => SetValue(PrescriptionStatus.Cancelled, out prescriptionStatus),
             _ => TryParseNumericEnum(normalized, out prescriptionStatus)
         };
     }

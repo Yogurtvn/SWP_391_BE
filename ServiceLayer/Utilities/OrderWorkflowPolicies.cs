@@ -50,7 +50,8 @@ internal static class OrderWorkflowPolicies
         [PrescriptionStatus.Submitted] = [PrescriptionStatus.Reviewing, PrescriptionStatus.Approved, PrescriptionStatus.Rejected],
         [PrescriptionStatus.Reviewing] = [PrescriptionStatus.Approved, PrescriptionStatus.Rejected],
         [PrescriptionStatus.Approved] = [],
-        [PrescriptionStatus.Rejected] = []
+        [PrescriptionStatus.Rejected] = [],
+        [PrescriptionStatus.Cancelled] = []
     };
 
     // Shipping guard: shipping updates are only valid when order is already in delivery lifecycle states.
