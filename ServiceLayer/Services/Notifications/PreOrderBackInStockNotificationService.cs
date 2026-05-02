@@ -76,7 +76,7 @@ public class PreOrderBackInStockNotificationService(
                 .Select(order => new
                 {
                     Order = order,
-                    Recipient = MapRecipient(order, variantId)
+                    Recipient = MapRecipient(order)
                 })
                 .Where(item => item.Recipient is not null)
                 .Select(item => new
@@ -126,10 +126,14 @@ public class PreOrderBackInStockNotificationService(
                         {
                             CustomerName = item.Recipient.CustomerName,
                             OrderId = item.Recipient.OrderId,
-                            ProductName = item.Recipient.ProductName,
-                            Sku = item.Recipient.Sku,
-                            VariantInfo = item.Recipient.VariantInfo,
-                            ExpectedRestockDate = item.Recipient.ExpectedRestockDate,
+                            OrderItems = item.Recipient.OrderItems
+                                .Select(orderItem => new PreOrderBackInStockEmailTemplateOrderItem
+                                {
+                                    ProductName = orderItem.ProductName,
+                                    Sku = orderItem.Sku,
+                                    VariantInfo = orderItem.VariantInfo
+                                })
+                                .ToList(),
                             UpdatedAt = updatedAt,
                             OrderTrackingUrl = _emailSettings.OrderTrackingUrl
                         });
@@ -354,7 +358,7 @@ public class PreOrderBackInStockNotificationService(
             : order.CreatedAt;
     }
 
-    private static BackInStockRecipient? MapRecipient(Order order, int variantId)
+    private static BackInStockRecipient? MapRecipient(Order order)
     {
         var email = order.User.Email?.Trim();
         if (string.IsNullOrWhiteSpace(email))
@@ -362,41 +366,61 @@ public class PreOrderBackInStockNotificationService(
             return null;
         }
 
-        var orderItem = order.OrderItems.FirstOrDefault(item => item.VariantId == variantId);
-        var variant = orderItem?.Variant;
+        var orderItems = order.OrderItems
+            .OrderBy(item => item.OrderItemId)
+            .Select(MapOrderItem)
+            .ToList();
+
+        if (orderItems.Count == 0)
+        {
+            return null;
+        }
 
         return new BackInStockRecipient
         {
             Email = email,
             CustomerName = Normalize(order.User.FullName),
             OrderId = order.OrderId,
-            ProductName = Normalize(variant?.Product.ProductName),
-            Sku = Normalize(variant?.Sku),
-            VariantInfo = BuildVariantInfo(variant),
-            ExpectedRestockDate = variant?.Inventory?.ExpectedRestockDate
+            OrderItems = orderItems
         };
     }
 
-    private static string? BuildVariantInfo(ProductVariant? variant)
+    private static BackInStockRecipientItem MapOrderItem(OrderItem orderItem)
     {
-        if (variant is null)
+        var variant = orderItem.Variant;
+
+        return new BackInStockRecipientItem
+        {
+            ProductName = Normalize(variant?.Product.ProductName),
+            Sku = Normalize(variant?.Sku),
+            VariantInfo = BuildVariantInfo(variant, orderItem.SelectedColor)
+        };
+    }
+
+    private static string? BuildVariantInfo(ProductVariant? variant, string? selectedColor)
+    {
+        if (variant is null && string.IsNullOrWhiteSpace(selectedColor))
         {
             return null;
         }
 
         var variantPieces = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(variant.Color))
+        var effectiveColor = !string.IsNullOrWhiteSpace(variant?.Color)
+            ? variant.Color.Trim()
+            : Normalize(selectedColor);
+
+        if (!string.IsNullOrWhiteSpace(effectiveColor))
         {
-            variantPieces.Add($"M\u00E0u: {variant.Color.Trim()}");
+            variantPieces.Add($"M\u00E0u: {effectiveColor}");
         }
 
-        if (!string.IsNullOrWhiteSpace(variant.Size))
+        if (!string.IsNullOrWhiteSpace(variant?.Size))
         {
             variantPieces.Add($"Size: {variant.Size.Trim()}");
         }
 
-        if (!string.IsNullOrWhiteSpace(variant.FrameType))
+        if (!string.IsNullOrWhiteSpace(variant?.FrameType))
         {
             variantPieces.Add($"D\u00F2ng g\u1ECDng: {variant.FrameType.Trim()}");
         }
@@ -417,12 +441,15 @@ public class PreOrderBackInStockNotificationService(
 
         public int OrderId { get; init; }
 
+        public required IReadOnlyCollection<BackInStockRecipientItem> OrderItems { get; init; }
+    }
+
+    private sealed class BackInStockRecipientItem
+    {
         public string? ProductName { get; init; }
 
         public string? Sku { get; init; }
 
         public string? VariantInfo { get; init; }
-
-        public DateTime? ExpectedRestockDate { get; init; }
     }
 }
