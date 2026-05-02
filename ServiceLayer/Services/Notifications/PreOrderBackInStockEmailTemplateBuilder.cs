@@ -10,17 +10,20 @@ internal sealed class PreOrderBackInStockEmailTemplateData
 
     public int? OrderId { get; init; }
 
+    public IReadOnlyCollection<PreOrderBackInStockEmailTemplateOrderItem> OrderItems { get; init; } = [];
+
+    public DateTime UpdatedAt { get; init; }
+
+    public string? OrderTrackingUrl { get; init; }
+}
+
+internal sealed class PreOrderBackInStockEmailTemplateOrderItem
+{
     public string? ProductName { get; init; }
 
     public string? Sku { get; init; }
 
     public string? VariantInfo { get; init; }
-
-    public DateTime? ExpectedRestockDate { get; init; }
-
-    public DateTime UpdatedAt { get; init; }
-
-    public string? OrderTrackingUrl { get; init; }
 }
 
 internal static class PreOrderBackInStockEmailTemplateBuilder
@@ -33,6 +36,7 @@ internal static class PreOrderBackInStockEmailTemplateBuilder
 
         var greetingName = HtmlEncode(NormalizeValue(templateData.CustomerName) ?? "Qu\u00FD kh\u00E1ch");
         var infoRows = BuildInfoRows(templateData);
+        var orderItemsRows = BuildOrderItemsRows(templateData.OrderItems);
         var callToAction = BuildCallToAction(templateData.OrderTrackingUrl);
 
         return $"""
@@ -74,6 +78,25 @@ internal static class PreOrderBackInStockEmailTemplateBuilder
                   </td>
                 </tr>
               </table>
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:16px;border:1px solid #eadcc4;background-color:#ffffff;border-radius:10px;">
+                <tr>
+                  <td style="padding:14px 16px;border-bottom:1px solid #eadcc4;background-color:#fff4df;">
+                    <p style="margin:0;font-family:Segoe UI,Arial,sans-serif;font-size:14px;line-height:22px;font-weight:700;color:#6c4525;">Danh s&#225;ch s&#7843;n ph&#7849;m pre-order</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 12px 14px 12px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                      <tr>
+                        <td valign="top" style="width:38%;padding:8px 8px;font-family:Segoe UI,Arial,sans-serif;font-size:12px;line-height:18px;font-weight:700;color:#8a6f53;border-bottom:1px solid #eadcc4;">S&#7843;n ph&#7849;m</td>
+                        <td valign="top" style="width:24%;padding:8px 8px;font-family:Segoe UI,Arial,sans-serif;font-size:12px;line-height:18px;font-weight:700;color:#8a6f53;border-bottom:1px solid #eadcc4;">SKU</td>
+                        <td valign="top" style="padding:8px 8px;font-family:Segoe UI,Arial,sans-serif;font-size:12px;line-height:18px;font-weight:700;color:#8a6f53;border-bottom:1px solid #eadcc4;">Phi&#234;n b&#7843;n</td>
+                      </tr>
+                      {orderItemsRows}
+                    </table>
+                  </td>
+                </tr>
+              </table>
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:22px;">
                 <tr>
                   <td align="center">
@@ -108,42 +131,44 @@ internal static class PreOrderBackInStockEmailTemplateBuilder
             AppendInfoRow(rowsBuilder, "M\u00E3 \u0111\u01A1n h\u00E0ng", $"#{templateData.OrderId.Value}");
         }
 
-        var productName = NormalizeValue(templateData.ProductName);
-        if (!string.IsNullOrWhiteSpace(productName))
-        {
-            AppendInfoRow(rowsBuilder, "S\u1EA3n ph\u1EA9m", productName);
-        }
-
-        var skuOrVariant = BuildSkuOrVariant(templateData.Sku, templateData.VariantInfo);
-        if (!string.IsNullOrWhiteSpace(skuOrVariant))
-        {
-            AppendInfoRow(rowsBuilder, "SKU / phi\u00EAn b\u1EA3n", skuOrVariant);
-        }
-
-        if (templateData.ExpectedRestockDate.HasValue)
-        {
-            AppendInfoRow(
-                rowsBuilder,
-                "Ng\u00E0y d\u1EF1 ki\u1EBFn v\u1EC1 h\u00E0ng",
-                FormatDateTime(templateData.ExpectedRestockDate.Value));
-        }
-
         AppendInfoRow(rowsBuilder, "Th\u1EDDi \u0111i\u1EC3m c\u1EADp nh\u1EADt", FormatDateTime(templateData.UpdatedAt));
 
         return rowsBuilder.ToString();
     }
 
-    private static string BuildSkuOrVariant(string? sku, string? variantInfo)
+    private static string BuildOrderItemsRows(IReadOnlyCollection<PreOrderBackInStockEmailTemplateOrderItem> orderItems)
     {
-        var normalizedSku = NormalizeValue(sku);
-        var normalizedVariantInfo = NormalizeValue(variantInfo);
+        var rowsBuilder = new StringBuilder();
+        var hasItems = false;
 
-        if (!string.IsNullOrWhiteSpace(normalizedSku) && !string.IsNullOrWhiteSpace(normalizedVariantInfo))
+        foreach (var orderItem in orderItems)
         {
-            return $"{normalizedSku} | {normalizedVariantInfo}";
+            hasItems = true;
+            AppendOrderItemRow(
+                rowsBuilder,
+                NormalizeValue(orderItem.ProductName) ?? "-",
+                NormalizeValue(orderItem.Sku) ?? "-",
+                NormalizeValue(orderItem.VariantInfo) ?? "-");
         }
 
-        return normalizedSku ?? normalizedVariantInfo ?? string.Empty;
+        if (!hasItems)
+        {
+            AppendOrderItemRow(rowsBuilder, "-", "-", "-");
+        }
+
+        return rowsBuilder.ToString();
+    }
+
+    private static void AppendOrderItemRow(StringBuilder rowsBuilder, string productName, string sku, string variantInfo)
+    {
+        rowsBuilder.Append(
+            $"""
+<tr>
+  <td valign="top" style="padding:8px 8px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;line-height:20px;color:#4f3a27;border-bottom:1px solid #f2e5cf;">{HtmlEncode(productName)}</td>
+  <td valign="top" style="padding:8px 8px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;line-height:20px;color:#4f3a27;border-bottom:1px solid #f2e5cf;">{HtmlEncode(sku)}</td>
+  <td valign="top" style="padding:8px 8px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;line-height:20px;color:#4f3a27;border-bottom:1px solid #f2e5cf;">{HtmlEncode(variantInfo)}</td>
+</tr>
+""");
     }
 
     private static void AppendInfoRow(StringBuilder rowsBuilder, string label, string value)
