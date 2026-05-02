@@ -179,7 +179,7 @@ public class OnlineEyewearDbContext(DbContextOptions<OnlineEyewearDbContext> opt
         {
             entity.ToTable("PrescriptionSpecs", table =>
             {
-                table.HasCheckConstraint("CK_PrescriptionSpecs_PrescriptionStatus", "[PrescriptionStatus] IN (1, 2, 3, 4, 5, 6)");
+                table.HasCheckConstraint("CK_PrescriptionSpecs_PrescriptionStatus", "[PrescriptionStatus] IN (1, 2, 3, 4, 5, 6, 7)");
                 table.HasCheckConstraint("CK_PrescriptionSpecs_Axis_Left", "[Axis_Left] BETWEEN 0 AND 180");
                 table.HasCheckConstraint("CK_PrescriptionSpecs_Axis_Right", "[Axis_Right] BETWEEN 0 AND 180");
                 table.HasCheckConstraint("CK_PrescriptionSpecs_PD", "[PD] > 0");

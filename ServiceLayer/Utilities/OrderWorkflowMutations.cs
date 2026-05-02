@@ -63,6 +63,32 @@ internal static class OrderWorkflowMutations
             }
         }
 
+        if (order.OrderType == OrderType.Prescription)
+        {
+            var prescriptionIds = order.OrderItems
+                .Where(orderItem => orderItem.PrescriptionId.HasValue)
+                .Select(orderItem => orderItem.PrescriptionId!.Value)
+                .Distinct()
+                .ToArray();
+
+            if (prescriptionIds.Length > 0)
+            {
+                var linkedPrescriptions = await unitOfWork.Repository<PrescriptionSpec>().FindAsync(
+                    filter: prescription => prescriptionIds.Contains(prescription.PrescriptionId));
+
+                foreach (var prescription in linkedPrescriptions)
+                {
+                    // Preserve explicit clinical review rejection outcomes.
+                    if (prescription.PrescriptionStatus is PrescriptionStatus.Rejected or PrescriptionStatus.Cancelled)
+                    {
+                        continue;
+                    }
+
+                    prescription.PrescriptionStatus = PrescriptionStatus.Cancelled;
+                }
+            }
+        }
+
         order.OrderStatus = OrderStatus.Cancelled;
         order.ShippingStatus = null;
         order.UpdatedAt = now;
