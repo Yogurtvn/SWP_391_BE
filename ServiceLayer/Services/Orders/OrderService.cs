@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using RepositoryLayer.Common;
 using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
@@ -354,7 +354,7 @@ public class OrderService(
                 _unitOfWork,
                 order,
                 userId,
-                note ?? "Order cancelled by customer.",
+                note ?? "Đơn hàng đã được khách hàng hủy.",
                 cancellationToken);
             await _unitOfWork.CommitTransactionAsync(cancellationToken);
         }
@@ -566,7 +566,7 @@ public class OrderService(
                     _unitOfWork,
                     order,
                     staffUserId,
-                    NormalizeText(request.Note) ?? "Order cancelled by staff.",
+                    NormalizeText(request.Note) ?? "Đơn hàng đã được nhân viên hủy.",
                     cancellationToken);
             }
             else
@@ -672,7 +672,7 @@ public class OrderService(
                 {
                     HistoryId = history.HistoryId,
                     OrderStatus = ApiEnumMapper.ToApiOrderStatus(history.OrderStatus),
-                    Note = history.Note,
+                    Note = LocalizeResponseNote(history.Note),
                     UpdatedAt = history.UpdatedAt
                 })
                 .ToList()
@@ -730,7 +730,7 @@ public class OrderService(
                 new PaymentHistory
                 {
                     PaymentStatus = PaymentStatus.Pending,
-                    Notes = "Payment created.",
+                    Notes = "Đã tạo thanh toán.",
                     CreatedAt = now
                 }
             ]
@@ -740,7 +740,7 @@ public class OrderService(
         {
             OrderStatus = initialOrderStatus,
             UpdatedByUserId = createdByUserId,
-            Note = "Order created.",
+            Note = "Đơn hàng đã được tạo.",
             UpdatedAt = now
         });
 
@@ -1312,7 +1312,7 @@ public class OrderService(
             payment.PaymentHistories.Add(new PaymentHistory
             {
                 PaymentStatus = PaymentStatus.Completed,
-                Notes = "Payment collected when the order was completed.",
+                Notes = "Đã thu tiền khi đơn hàng hoàn tất.",
                 CreatedAt = completedAt
             });
         }
@@ -1340,16 +1340,76 @@ public class OrderService(
         };
     }
 
-    private static string BuildDefaultStatusNote(OrderStatus orderStatus)
+        private static string BuildDefaultStatusNote(OrderStatus orderStatus)
     {
         return orderStatus switch
         {
-            OrderStatus.AwaitingStock => "Order moved to awaiting stock.",
-            OrderStatus.Processing => "Order is being processed.",
-            OrderStatus.Shipped => "Order shipped.",
-            OrderStatus.Completed => "Order completed.",
-            OrderStatus.Cancelled => "Order cancelled.",
-            _ => $"Order status updated to {ApiEnumMapper.ToApiOrderStatus(orderStatus)}."
+            OrderStatus.AwaitingStock => "Đơn hàng đã chuyển sang trạng thái chờ bổ sung hàng.",
+            OrderStatus.Processing => "Đơn hàng đang được xử lý.",
+            OrderStatus.Shipped => "Đơn hàng đã được giao cho đơn vị vận chuyển.",
+            OrderStatus.Completed => "Đơn hàng đã hoàn tất.",
+            OrderStatus.Cancelled => "Đơn hàng đã bị hủy.",
+            _ => $"Trạng thái đơn hàng đã được cập nhật sang {ApiEnumMapper.ToApiOrderStatus(orderStatus)}."
+        };
+    }
+
+    private static string? LocalizeResponseNote(string? note)
+    {
+        var normalized = NormalizeText(note);
+
+        if (normalized is null)
+        {
+            return note;
+        }
+
+        if (normalized.StartsWith(
+                "Order cancelled automatically because online payment failed (",
+                StringComparison.Ordinal)
+            && normalized.EndsWith(").", StringComparison.Ordinal))
+        {
+            var source = normalized[
+                "Order cancelled automatically because online payment failed (".Length..
+                (normalized.Length - 2)];
+            return $"Đơn hàng đã tự động hủy do thanh toán online thất bại ({source}).";
+        }
+
+        if (normalized.StartsWith("Order status updated to ", StringComparison.Ordinal)
+            && normalized.EndsWith(".", StringComparison.Ordinal))
+        {
+            var status = normalized["Order status updated to ".Length..^1];
+            return $"Trạng thái đơn hàng đã được cập nhật sang {status}.";
+        }
+
+        return normalized switch
+        {
+            "Order cancelled by customer." => "Đơn hàng đã được khách hàng hủy.",
+            "Order cancelled by staff." => "Đơn hàng đã được nhân viên hủy.",
+            "Order created." => "Đơn hàng đã được tạo.",
+            "Order moved to awaiting stock." => "Đơn hàng đã chuyển sang trạng thái chờ bổ sung hàng.",
+            "Order is being processed." => "Đơn hàng đang được xử lý.",
+            "Order shipped." => "Đơn hàng đã được giao cho đơn vị vận chuyển.",
+            "Order completed." => "Đơn hàng đã hoàn tất.",
+            "Order cancelled." => "Đơn hàng đã bị hủy.",
+            "Order moved to awaiting stock automatically after successful online payment."
+                => "Đơn hàng tự động chuyển sang chờ bổ sung hàng sau khi thanh toán online thành công.",
+            "Order moved to processing automatically after stock receipt and back-in-stock email."
+                => "Đơn hàng đã tự động chuyển sang đang xử lý sau khi nhập hàng và gửi email hàng đã về.",
+            "Order moved to processing automatically after variant stock restoration and back-in-stock email."
+                => "Đơn hàng đã tự động chuyển sang đang xử lý sau khi tồn kho biến thể được khôi phục và gửi email hàng đã về.",
+            "Order cancelled automatically because prescription was rejected."
+                => "Đơn hàng đã tự động hủy vì đơn kính bị từ chối.",
+            "Order cancelled automatically because payment was not completed in time."
+                => "Đơn hàng đã tự động hủy vì thanh toán không hoàn tất đúng hạn.",
+            "Payment created." => "Đã tạo thanh toán.",
+            "Payment collected when the order was completed." => "Đã thu tiền khi đơn hàng hoàn tất.",
+            "Payment closed because the order was cancelled." => "Thanh toán đã được đóng do đơn hàng bị hủy.",
+            "PayOS reconcile confirmed payment after return."
+                => "Đối soát PayOS xác nhận thanh toán thành công sau khi quay lại.",
+            "PayOS reconcile marked payment as failed after return."
+                => "Đối soát PayOS xác nhận thanh toán thất bại sau khi quay lại.",
+            "PayOS webhook confirmed payment." => "Webhook PayOS xác nhận thanh toán thành công.",
+            "PayOS webhook marked payment as failed." => "Webhook PayOS xác nhận thanh toán thất bại.",
+            _ => note
         };
     }
 
@@ -1583,7 +1643,7 @@ public class OrderService(
                             PaymentHistoryId = history.PaymentHistoryId,
                             PaymentStatus = ApiEnumMapper.ToApiPaymentStatus(history.PaymentStatus),
                             TransactionCode = history.TransactionCode,
-                            Notes = history.Notes,
+                            Notes = LocalizeResponseNote(history.Notes),
                             CreatedAt = history.CreatedAt
                         })
                         .ToList()
@@ -1597,7 +1657,7 @@ public class OrderService(
                     OrderStatus = ApiEnumMapper.ToApiOrderStatus(history.OrderStatus),
                     UpdatedByUserId = history.UpdatedByUserId,
                     UpdatedByName = history.UpdatedByUser?.FullName,
-                    Note = history.Note,
+                    Note = LocalizeResponseNote(history.Note),
                     UpdatedAt = history.UpdatedAt
                 })
                 .ToList()
@@ -1689,3 +1749,7 @@ public class OrderService(
         Payment Payment,
         PaymentActionResponse? PaymentAction);
 }
+
+
+
+

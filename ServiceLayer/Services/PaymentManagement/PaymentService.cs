@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using RepositoryLayer.Common;
 using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
@@ -89,7 +89,7 @@ public class PaymentService(
                     new PaymentHistory
                     {
                         PaymentStatus = PaymentStatus.Pending,
-                        Notes = "Payment created.",
+                        Notes = "Đã tạo thanh toán.",
                         CreatedAt = now
                     }
                 ]
@@ -328,7 +328,7 @@ public class PaymentService(
                     {
                         PaymentStatus = PaymentStatus.Completed,
                         TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
-                        Notes = "PayOS reconcile confirmed payment after return.",
+                        Notes = "Đối soát PayOS xác nhận thanh toán thành công sau khi quay lại.",
                         CreatedAt = now
                     });
 
@@ -377,7 +377,7 @@ public class PaymentService(
                     {
                         PaymentStatus = PaymentStatus.Failed,
                         TransactionCode = orderCode.ToString(CultureInfo.InvariantCulture),
-                        Notes = "PayOS reconcile marked payment as failed after return.",
+                        Notes = "Đối soát PayOS xác nhận thanh toán thất bại sau khi quay lại.",
                         CreatedAt = now
                     });
 
@@ -717,7 +717,7 @@ public class PaymentService(
                 {
                     PaymentStatus = PaymentStatus.Completed,
                     TransactionCode = transactionCode,
-                    Notes = "PayOS webhook confirmed payment.",
+                    Notes = "Webhook PayOS xác nhận thanh toán thành công.",
                     CreatedAt = now
                 });
 
@@ -756,7 +756,7 @@ public class PaymentService(
             {
                 PaymentStatus = PaymentStatus.Failed,
                 TransactionCode = transactionCode,
-                Notes = "PayOS webhook marked payment as failed.",
+                Notes = "Webhook PayOS xác nhận thanh toán thất bại.",
                 CreatedAt = now
             });
 
@@ -948,7 +948,7 @@ public class PaymentService(
                 _unitOfWork,
                 order,
                 updatedByUserId: null,
-                note: $"Order cancelled automatically because online payment failed ({source}).",
+                note: $"Đơn hàng đã tự động hủy do thanh toán online thất bại ({source}).",
                 cancellationToken);
             return inventoryTransitions;
         }
@@ -972,7 +972,7 @@ public class PaymentService(
             {
                 OrderStatus = OrderStatus.AwaitingStock,
                 UpdatedByUserId = null,
-                Note = "Order moved to awaiting stock automatically after successful online payment.",
+                Note = "Đơn hàng tự động chuyển sang chờ bổ sung hàng sau khi thanh toán online thành công.",
                 UpdatedAt = now
             });
 
@@ -1191,3 +1191,5 @@ public class PaymentService(
         PayOsWebhookResolutionResult Result,
         Payment? Payment);
 }
+
+

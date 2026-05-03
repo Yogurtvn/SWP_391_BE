@@ -1,4 +1,4 @@
-using RepositoryLayer.Entities;
+﻿using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 
@@ -116,7 +116,7 @@ internal static class OrderWorkflowMutations
             payment.PaymentHistories.Add(new PaymentHistory
             {
                 PaymentStatus = PaymentStatus.Failed,
-                Notes = "Payment closed because the order was cancelled.",
+                Notes = "Thanh toán đã được đóng do đơn hàng bị hủy.",
                 CreatedAt = now
             });
         }
@@ -199,3 +199,5 @@ internal static class OrderWorkflowMutations
         return order.OrderType != OrderType.PreOrder;
     }
 }
+
+

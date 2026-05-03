@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
@@ -16,7 +16,7 @@ public class PreOrderBackInStockNotificationService(
     IOptions<EmailSettings> emailOptions,
     ILogger<PreOrderBackInStockNotificationService> logger) : IPreOrderBackInStockNotificationService
 {
-    private const string BackInStockSubject = "[E-World] S\u1EA3n ph\u1EA9m b\u1EA1n \u0111\u1EB7t tr\u01B0\u1EDBc \u0111\u00E3 v\u1EC1 h\u00E0ng";
+    private const string BackInStockSubject = "[E-World] Sản phẩm bạn đặt trước đã về hàng";
     private const string StockReceiptSource = "stock-receipt:create";
     private const string VariantUpdateSource = "variant:update";
 
@@ -208,8 +208,8 @@ public class PreOrderBackInStockNotificationService(
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
 
             var note = transitionContext == OrderStatusTransitionContext.StockReceiptWorkflow
-                ? "Order moved to processing automatically after stock receipt and back-in-stock email."
-                : "Order moved to processing automatically after variant stock restoration and back-in-stock email.";
+                ? "Đơn hàng đã tự động chuyển sang đang xử lý sau khi nhập hàng và gửi email hàng đã về."
+                : "Đơn hàng đã tự động chuyển sang đang xử lý sau khi tồn kho biến thể được khôi phục và gửi email hàng đã về.";
 
             var transitionResult = await OrderWorkflowMutations.MovePreOrderAwaitingStockToProcessingInternalAsync(
                 _unitOfWork,
@@ -412,7 +412,7 @@ public class PreOrderBackInStockNotificationService(
 
         if (!string.IsNullOrWhiteSpace(effectiveColor))
         {
-            variantPieces.Add($"M\u00E0u: {effectiveColor}");
+            variantPieces.Add($"Màu: {effectiveColor}");
         }
 
         if (!string.IsNullOrWhiteSpace(variant?.Size))
@@ -422,7 +422,7 @@ public class PreOrderBackInStockNotificationService(
 
         if (!string.IsNullOrWhiteSpace(variant?.FrameType))
         {
-            variantPieces.Add($"D\u00F2ng g\u1ECDng: {variant.FrameType.Trim()}");
+            variantPieces.Add($"Dòng gọng: {variant.FrameType.Trim()}");
         }
 
         return variantPieces.Count == 0 ? null : string.Join(" | ", variantPieces);
@@ -453,3 +453,4 @@ public class PreOrderBackInStockNotificationService(
         public string? VariantInfo { get; init; }
     }
 }
+
