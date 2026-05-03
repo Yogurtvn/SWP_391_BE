@@ -450,7 +450,7 @@ public class OrderService(
                     IsReadyAvailable = (item.Variant.Inventory?.Quantity ?? 0) >= item.Quantity,
                     IsPreOrderAllowed = item.Variant.Inventory?.IsPreOrderAllowed ?? false,
                     ExpectedRestockDate = item.Variant.Inventory?.ExpectedRestockDate,
-                    PreOrderNote = item.Variant.Inventory?.PreOrderNote,
+                    PreOrderNote = ResolveOrderItemPreOrderNote(order.OrderType, item.Variant.Inventory),
                     UnitPrice = item.UnitPrice,
                     OriginalUnitPrice = item.OriginalUnitPrice,
                     DiscountPercent = item.DiscountPercent,
@@ -502,7 +502,7 @@ public class OrderService(
             IsReadyAvailable = (orderItem.Variant.Inventory?.Quantity ?? 0) >= orderItem.Quantity,
             IsPreOrderAllowed = orderItem.Variant.Inventory?.IsPreOrderAllowed ?? false,
             ExpectedRestockDate = orderItem.Variant.Inventory?.ExpectedRestockDate,
-            PreOrderNote = orderItem.Variant.Inventory?.PreOrderNote,
+            PreOrderNote = ResolveOrderItemPreOrderNote(order.OrderType, orderItem.Variant.Inventory),
             SelectedColor = orderItem.SelectedColor,
             TotalPrice = (orderItem.UnitPrice + (orderItem.LensPrice ?? 0m)) * orderItem.Quantity,
             OriginalUnitPrice = orderItem.OriginalUnitPrice,
@@ -1538,6 +1538,40 @@ public class OrderService(
                 .ToLowerInvariant();
     }
 
+    private static string? ResolveOrderItemPreOrderNote(OrderType orderType, Inventory? inventory)
+    {
+        var normalizedNote = NormalizeText(inventory?.PreOrderNote);
+        if (normalizedNote is null)
+        {
+            return null;
+        }
+
+        if (orderType != OrderType.PreOrder)
+        {
+            return normalizedNote;
+        }
+
+        // Order is already a pre-order: suppress contradictory inventory notes
+        // that describe "pre-order is not open" from the current inventory state.
+        return IsConflictedPreOrderNote(normalizedNote)
+            ? "Đơn đặt trước đã được ghi nhận thành công. Chúng tôi sẽ thông báo khi hàng về kho."
+            : normalizedNote;
+    }
+
+    private static bool IsConflictedPreOrderNote(string note)
+    {
+        var normalized = note.Trim().ToLowerInvariant();
+
+        return normalized.Contains("chưa mở đặt trước", StringComparison.Ordinal)
+            || normalized.Contains("không mở đặt trước", StringComparison.Ordinal)
+            || normalized.Contains("chưa hỗ trợ đặt trước", StringComparison.Ordinal)
+            || normalized.Contains("không hỗ trợ đặt trước", StringComparison.Ordinal)
+            || normalized.Contains("pre-order is not open", StringComparison.Ordinal)
+            || normalized.Contains("preorder is not open", StringComparison.Ordinal)
+            || normalized.Contains("not open for pre-order", StringComparison.Ordinal)
+            || normalized.Contains("not open for preorder", StringComparison.Ordinal);
+    }
+
     private static CheckoutPaymentResponse MapCheckoutPayment(Payment payment, PaymentActionResponse? paymentAction)
     {
         return new CheckoutPaymentResponse
@@ -1612,7 +1646,7 @@ public class OrderService(
                     IsReadyAvailable = (item.Variant.Inventory?.Quantity ?? 0) >= item.Quantity,
                     IsPreOrderAllowed = item.Variant.Inventory?.IsPreOrderAllowed ?? false,
                     ExpectedRestockDate = item.Variant.Inventory?.ExpectedRestockDate,
-                    PreOrderNote = item.Variant.Inventory?.PreOrderNote,
+                    PreOrderNote = ResolveOrderItemPreOrderNote(order.OrderType, item.Variant.Inventory),
                     OriginalUnitPrice = item.OriginalUnitPrice,
                     DiscountPercent = item.DiscountPercent,
                     DiscountAmount = item.DiscountAmount,
