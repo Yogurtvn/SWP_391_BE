@@ -1,5 +1,6 @@
 using RepositoryLayer.Common;
 using RepositoryLayer.Entities;
+using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
 using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.StockReceipt;
@@ -91,6 +92,8 @@ public class StockReceiptService(
             source: "stock-receipt:create",
             cancellationToken);
 
+        await ReconcilePreOrderAvailabilityAfterStockReceiptAsync(request.VariantId, cancellationToken);
+
         var createdReceipt = await receiptRepository.GetFirstOrDefaultAsync(
             receipt => receipt.ReceiptId == stockReceipt!.ReceiptId,
             includeProperties: "Staff",
@@ -143,6 +146,55 @@ public class StockReceiptService(
             tracked: false);
 
         return stockReceipt is null ? null : MapToDto(stockReceipt);
+    }
+
+    private async Task ReconcilePreOrderAvailabilityAfterStockReceiptAsync(int variantId, CancellationToken cancellationToken)
+    {
+        var inventoryRepository = _unitOfWork.Repository<Inventory>();
+        var orderRepository = _unitOfWork.Repository<Order>();
+
+        var inventorySnapshot = await inventoryRepository.GetFirstOrDefaultAsync(
+            inventory => inventory.VariantId == variantId,
+            tracked: false);
+
+        if (inventorySnapshot is null
+            || !inventorySnapshot.IsPreOrderAllowed
+            || inventorySnapshot.Quantity <= 0)
+        {
+            return;
+        }
+
+        var awaitingPreOrders = await orderRepository.FindAsync(
+            filter: order =>
+                order.OrderType == OrderType.PreOrder
+                && order.OrderStatus == OrderStatus.AwaitingStock
+                && order.OrderItems.Any(orderItem => orderItem.VariantId == variantId),
+            includeProperties: "OrderItems",
+            tracked: false);
+
+        var waitingPreOrderDemand = awaitingPreOrders.Sum(order =>
+            order.OrderItems
+                .Where(orderItem => orderItem.VariantId == variantId)
+                .Sum(orderItem => orderItem.Quantity));
+
+        if (inventorySnapshot.Quantity <= waitingPreOrderDemand)
+        {
+            return;
+        }
+
+        var trackedInventory = await inventoryRepository.GetFirstOrDefaultAsync(
+            inventory => inventory.VariantId == variantId,
+            tracked: true);
+
+        if (trackedInventory is null || !trackedInventory.IsPreOrderAllowed)
+        {
+            return;
+        }
+
+        trackedInventory.IsPreOrderAllowed = false;
+        trackedInventory.ExpectedRestockDate = null;
+        trackedInventory.PreOrderNote = null; 
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
     private static StockReceiptDtoResponse MapToDto(RepositoryLayer.Entities.StockReceipt stockReceipt)
