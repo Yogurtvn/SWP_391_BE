@@ -167,7 +167,7 @@ public class StockReceiptService(
         var awaitingPreOrders = await orderRepository.FindAsync(
             filter: order =>
                 order.OrderType == OrderType.PreOrder
-                && (order.OrderStatus == OrderStatus.Pending || order.OrderStatus == OrderStatus.AwaitingStock)
+                && order.OrderStatus == OrderStatus.AwaitingStock
                 && order.OrderItems.Any(orderItem => orderItem.VariantId == variantId),
             includeProperties: "OrderItems",
             tracked: false);
