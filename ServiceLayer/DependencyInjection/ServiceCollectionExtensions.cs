@@ -73,6 +73,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IProductVariantService, ProductVariantService>();
         services.AddScoped<IProductImageService, ProductImageService>();
         services.AddScoped<IInventoryService, InventoryService>();
+        services.AddScoped<IPreOrderAvailabilityReconciliationService, PreOrderAvailabilityReconciliationService>();
         services.AddScoped<IStockReceiptService, StockReceiptService>();
         services.AddScoped<IPreOrderBackInStockNotificationService, PreOrderBackInStockNotificationService>();
         services.AddScoped<IEmailService, SmtpEmailService>();

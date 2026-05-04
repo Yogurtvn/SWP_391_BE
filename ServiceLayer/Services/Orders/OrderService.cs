@@ -4,6 +4,7 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Orders;
 using ServiceLayer.Contracts.Payment;
@@ -22,7 +23,8 @@ public class OrderService(
     OnlineEyewearDbContext dbContext,
     IPaymentService paymentService,
     IPrescriptionPricingService prescriptionPricingService,
-    IPreOrderBackInStockNotificationService backInStockNotificationService) : IOrderService
+    IPreOrderBackInStockNotificationService backInStockNotificationService,
+    IPreOrderAvailabilityReconciliationService preOrderAvailabilityReconciliationService) : IOrderService
 {
     private const string PaymentRuleErrorCode = "ORDER_CANNOT_BE_CANCELLED";
     private const string PaymentRuleErrorMessage = "Order cannot be cancelled at current payment status";
@@ -36,6 +38,7 @@ public class OrderService(
     private readonly IPaymentService _paymentService = paymentService;
     private readonly IPrescriptionPricingService _prescriptionPricingService = prescriptionPricingService;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
+    private readonly IPreOrderAvailabilityReconciliationService _preOrderAvailabilityReconciliationService = preOrderAvailabilityReconciliationService;
 
     public async Task<CheckoutOrderResponse> CheckoutOrderAsync(
         int userId,
@@ -344,14 +347,13 @@ public class OrderService(
         }
 
         var note = NormalizeText(request.Reason);
-        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
-            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
-
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
-            inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
+            await OrderWorkflowMutations.CancelOrderAsync(
                 _unitOfWork,
+                _backInStockNotificationService,
+                _preOrderAvailabilityReconciliationService,
                 order,
                 userId,
                 note ?? "Đơn hàng đã được khách hàng hủy.",
@@ -363,8 +365,6 @@ public class OrderService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
-
-        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "order:cancel", cancellationToken);
 
         return new OrderCancelResponse
         {
@@ -552,9 +552,6 @@ public class OrderService(
             order,
             nextOrderStatus,
             OrderStatusTransitionContext.StaffPatch);
-        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
-            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
-
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
@@ -562,8 +559,10 @@ public class OrderService(
             if (nextOrderStatus == OrderStatus.Cancelled)
             {
                 EnsureCancellationAllowedByPayment(order);
-                inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
+                await OrderWorkflowMutations.CancelOrderAsync(
                     _unitOfWork,
+                    _backInStockNotificationService,
+                    _preOrderAvailabilityReconciliationService,
                     order,
                     staffUserId,
                     NormalizeText(request.Note) ?? "Đơn hàng đã được nhân viên hủy.",
@@ -600,8 +599,6 @@ public class OrderService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
-
-        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "order:cancel", cancellationToken);
 
         return new OrderStatusUpdatedResponse
         {
@@ -1224,22 +1221,6 @@ public class OrderService(
         if (!OrderWorkflowPolicies.CanCancelByPaymentRule(order.Payments))
         {
             throw CreateApiException(HttpStatusCode.Conflict, PaymentRuleErrorCode, PaymentRuleErrorMessage);
-        }
-    }
-
-    private async Task NotifyBackInStockTransitionsAsync(
-        IEnumerable<OrderWorkflowMutations.InventoryQuantityTransition> transitions,
-        string source,
-        CancellationToken cancellationToken)
-    {
-        foreach (var transition in transitions)
-        {
-            await _backInStockNotificationService.HandleStockChangeAsync(
-                transition.VariantId,
-                transition.PreviousQuantity,
-                transition.CurrentQuantity,
-                source,
-                cancellationToken);
         }
     }
 

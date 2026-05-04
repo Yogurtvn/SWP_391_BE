@@ -18,6 +18,7 @@ public class PreOrderBackInStockNotificationService(
 {
     private const string BackInStockSubject = "[E-World] Sản phẩm bạn đặt trước đã về hàng";
     private const string StockReceiptSource = "stock-receipt:create";
+    private const string OrderCancelRestoreInventorySource = "order-cancel:restore-inventory";
     private const string VariantUpdateSource = "variant:update";
 
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
@@ -294,6 +295,12 @@ public class PreOrderBackInStockNotificationService(
     {
         if (string.Equals(source, StockReceiptSource, StringComparison.OrdinalIgnoreCase))
         {
+            return OrderStatusTransitionContext.StockReceiptWorkflow;
+        }
+
+        if (string.Equals(source, OrderCancelRestoreInventorySource, StringComparison.OrdinalIgnoreCase))
+        {
+            // Cancel-order inventory restoration is treated as the same stock-restoration workflow path.
             return OrderStatusTransitionContext.StockReceiptWorkflow;
         }
 
