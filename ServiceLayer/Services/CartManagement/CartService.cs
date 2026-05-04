@@ -261,6 +261,7 @@ public class CartService(
                 "variantId",
                 "variantId must reference an active prescription-compatible frame variant");
         }
+        ValidatePrescriptionVariantAvailability(variant, preparedRequest.Quantity);
 
         var lensType = await GetActiveLensTypeAsync(preparedRequest.LensTypeId);
 
@@ -366,6 +367,7 @@ public class CartService(
                 "variantId",
                 "variantId must reference an active prescription-compatible frame variant");
         }
+        ValidatePrescriptionVariantAvailability(variant, preparedRequest.Quantity);
 
         var lensType = await GetActiveLensTypeAsync(preparedRequest.LensTypeId);
 
@@ -561,7 +563,7 @@ public class CartService(
                 && variant.Product.IsActive
                 && variant.Product.ProductType == ProductType.Frame
                 && variant.Product.PrescriptionCompatible,
-            includeProperties: "Product,Promotion",
+            includeProperties: "Product,Promotion,Inventory",
             tracked: false);
     }
 
@@ -888,6 +890,25 @@ public class CartService(
                     "orderType",
                     "preOrder is only allowed when ready stock is insufficient");
             }
+        }
+    }
+
+    private static void ValidatePrescriptionVariantAvailability(ProductVariant variant, int quantity)
+    {
+        var inventory = variant.Inventory;
+
+        if (inventory is null)
+        {
+            throw CreateInvalidPrescriptionException(
+                "variantId",
+                "variantId must reference a variant with inventory configured");
+        }
+
+        if (inventory.Quantity < quantity)
+        {
+            throw CreateInvalidPrescriptionException(
+                "variantId",
+                "selected variant is out of stock for prescription checkout");
         }
     }
 

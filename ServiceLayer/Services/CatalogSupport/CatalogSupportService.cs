@@ -126,12 +126,20 @@ public class CatalogSupportService(
                 && item.Product.IsActive
                 && item.Product.ProductType == ProductType.Frame
                 && item.Product.PrescriptionCompatible,
-            includeProperties: "Product,Promotion",
+            includeProperties: "Product,Promotion,Inventory",
             tracked: false);
 
         if (variant is null)
         {
             throw CreatePricingException("variantId", "variantId must reference a prescription-compatible frame variant");
+        }
+
+        var inventory = variant.Inventory;
+        if (inventory is null || inventory.Quantity < quantity)
+        {
+            throw CreatePricingException(
+                "quantity",
+                "selected variant does not have enough ready stock for prescription checkout");
         }
 
         var lensType = await lensTypeRepository.GetFirstOrDefaultAsync(
