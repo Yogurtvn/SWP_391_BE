@@ -12,6 +12,10 @@ public interface IProductService
         bool includeInactive,
         CancellationToken cancellationToken = default);
 
+    Task<ProductFilterOptionsResponse> GetProductFilterOptionsAsync(
+        GetProductFilterOptionsRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<ProductDetailResponse?> GetProductByIdAsync(
         int productId,
         bool includeInactive,

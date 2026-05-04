@@ -36,6 +36,23 @@ public class ProductsController(IProductService productService) : ApiControllerB
     }
 
     [AllowAnonymous]
+    [HttpGet("filter-options")]
+    public async Task<ActionResult<ProductFilterOptionsResponse>> GetFilterOptions(
+        [FromQuery] GetProductFilterOptionsRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _productService.GetProductFilterOptionsAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ApiError(exception);
+        }
+    }
+
+    [AllowAnonymous]
     [HttpGet("{productId:int}")]
     public async Task<ActionResult<ProductDetailResponse>> GetProduct(int productId, CancellationToken cancellationToken)
     {

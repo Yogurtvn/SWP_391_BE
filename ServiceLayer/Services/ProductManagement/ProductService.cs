@@ -90,6 +90,30 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             pagedProducts.TotalItems);
     }
 
+    public async Task<ProductFilterOptionsResponse> GetProductFilterOptionsAsync(
+        GetProductFilterOptionsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var productType = ParseProductTypeOrNull(request.ProductType);
+        var variantRepository = _unitOfWork.Repository<ProductVariant>();
+
+        var variants = await variantRepository.FindAsync(
+            filter: variant =>
+                variant.IsActive
+                && variant.Product.IsActive
+                && (!productType.HasValue || variant.Product.ProductType == productType.Value),
+            tracked: false);
+
+        return new ProductFilterOptionsResponse
+        {
+            Colors = ExtractDistinctSortedOptions(variants.Select(variant => variant.Color)),
+            Sizes = ExtractDistinctSortedOptions(variants.Select(variant => variant.Size)),
+            FrameTypes = ExtractDistinctSortedOptions(variants.Select(variant => variant.FrameType))
+        };
+    }
+
     public async Task<ProductDetailResponse?> GetProductByIdAsync(
         int productId,
         bool includeInactive,
@@ -420,7 +444,7 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
         var normalizedValue = NormalizeText(rawProductType);
 
         return normalizedValue is not null
-               && Enum.TryParse<ProductType>(normalizedValue, ignoreCase: true, out var parsedValue)
+               && TryParseProductType(normalizedValue, out var parsedValue)
             ? parsedValue
             : throw CreateValidationException("productType", "productType is invalid");
     }
@@ -434,9 +458,20 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
             return null;
         }
 
-        return Enum.TryParse<ProductType>(normalizedValue, ignoreCase: true, out var parsedValue)
+        return TryParseProductType(normalizedValue, out var parsedValue)
             ? parsedValue
             : throw CreateInvalidQueryException("productType", "productType is invalid");
+    }
+
+    private static bool TryParseProductType(string normalizedValue, out ProductType productType)
+    {
+        if (normalizedValue.Equals("eyeglasses", StringComparison.OrdinalIgnoreCase))
+        {
+            productType = ProductType.Frame;
+            return true;
+        }
+
+        return Enum.TryParse(normalizedValue, ignoreCase: true, out productType);
     }
 
     private static (string SortBy, bool SortDescending) NormalizeProductSort(string? rawSortBy, string? rawSortOrder)
@@ -475,6 +510,17 @@ public class ProductService(IUnitOfWork unitOfWork) : IProductService
     private static string? NormalizeNullableText(string? value)
     {
         return NormalizeText(value);
+    }
+
+    private static IReadOnlyList<string> ExtractDistinctSortedOptions(IEnumerable<string?> rawValues)
+    {
+        return rawValues
+            .Select(NormalizeText)
+            .Where(value => value is not null)
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string ToApiEnum<TEnum>(TEnum value)
