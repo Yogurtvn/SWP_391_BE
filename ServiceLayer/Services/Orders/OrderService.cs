@@ -703,7 +703,9 @@ public class OrderService(
         var normalizedShippingFee = NormalizeMoney(shippingFee, "shippingFee");
         var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
         // Order flow: every order starts at Pending; later guards decide automatic/manual transitions by type.
-        var initialOrderStatus = OrderStatus.Pending;
+        var initialOrderStatus = orderType == OrderType.PreOrder
+                                              ? OrderStatus.AwaitingStock
+                                              : OrderStatus.Pending;
         var order = new Order
         {
             UserId = userId,
