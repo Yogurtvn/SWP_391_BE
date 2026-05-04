@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using RepositoryLayer.Common;
 using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
@@ -308,7 +308,7 @@ public class PrescriptionService(
                 order,
                 staffUserId,
                 // Why: order can no longer be fulfilled safely after prescription rejection.
-                "Order cancelled automatically because prescription was rejected.",
+                "Đơn hàng đã tự động hủy vì đơn kính bị từ chối.",
                 cancellationToken);
 
             foreach (var transition in orderTransitions)
@@ -443,3 +443,5 @@ public class PrescriptionService(
         return new ApiException((int)statusCode, errorCode, message, details);
     }
 }
+
+
