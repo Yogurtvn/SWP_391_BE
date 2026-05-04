@@ -99,7 +99,6 @@ public class PrescriptionService(
                     .FirstOrDefault(),
                 LensTypeId = prescription.LensTypeId,
                 LensTypeCode = prescription.LensTypeCode,
-                LensMaterial = prescription.LensMaterial,
                 TotalLensPrice = prescription.TotalLensPrice,
                 PrescriptionImageUrl = prescription.PrescriptionImage,
                 PrescriptionStatus = ApiEnumMapper.ToApiPrescriptionStatus(prescription.PrescriptionStatus),
@@ -136,11 +135,7 @@ public class PrescriptionService(
                     .FirstOrDefault(),
                 LensTypeId = prescription.LensTypeId,
                 LensTypeCode = prescription.LensTypeCode ?? prescription.LensType?.LensCode,
-                LensMaterial = prescription.LensMaterial,
-                Coatings = DeserializeCoatings(prescription.Coatings).ToList(),
                 LensBasePrice = prescription.LensBasePrice,
-                MaterialPrice = prescription.MaterialPrice,
-                CoatingPrice = prescription.CoatingPrice,
                 TotalLensPrice = prescription.TotalLensPrice,
                 RightEye = new PrescriptionEyeResponse
                 {
@@ -336,20 +331,6 @@ public class PrescriptionService(
         {
             throw CreateApiException(HttpStatusCode.BadRequest, "INVALID_PRESCRIPTION_STATUS", "Invalid prescription status update");
         }
-    }
-
-    private static IReadOnlyList<string> DeserializeCoatings(string? serializedCoatings)
-    {
-        if (string.IsNullOrWhiteSpace(serializedCoatings))
-        {
-            return [];
-        }
-
-        return serializedCoatings
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
     }
 
     private static string? NormalizeOptionalNote(string? value)

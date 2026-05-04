@@ -83,7 +83,6 @@ public static class ServiceCollectionExtensions
 
         services.Configure<CloudinaryOptions>(configuration.GetSection(CloudinaryOptions.SectionName));
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
-        services.Configure<PrescriptionPricingOptions>(configuration.GetSection(PrescriptionPricingOptions.SectionName));
         services.PostConfigure<CloudinaryOptions>(options =>
         {
             options.CloudName = ResolveConfigOverride(

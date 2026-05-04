@@ -8,15 +8,7 @@ public class PrescriptionCartItemDetailResponse
 
     public string? LensName { get; set; }
 
-    public string? LensMaterial { get; set; }
-
-    public List<string> Coatings { get; set; } = [];
-
     public decimal LensBasePrice { get; set; }
-
-    public decimal MaterialPrice { get; set; }
-
-    public decimal CoatingPrice { get; set; }
 
     public decimal LensPrice { get; set; }
 

@@ -6,10 +6,6 @@ public class PrescriptionPricingResponse
 
     public decimal LensBasePrice { get; set; }
 
-    public decimal MaterialPrice { get; set; }
-
-    public decimal CoatingPrice { get; set; }
-
     public decimal LensPrice { get; set; }
 
     public int Quantity { get; set; }

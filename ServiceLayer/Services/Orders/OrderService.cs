@@ -891,12 +891,9 @@ public class OrderService(
                     var calculatedPricing = _prescriptionPricingService.Calculate(
                         pricing.FinalPrice,
                         detail.LensType.Price,
-                        detail.LensMaterial,
-                        DeserializeCoatings(detail.Coatings),
                         item.Quantity,
                         errorCode: "CHECKOUT_FAILED",
                         errorMessage: "Unable to checkout selected items");
-                    var serializedCoatings = SerializeCoatings(calculatedPricing.Coatings);
 
                     return new OrderCreationItem
                     {
@@ -920,11 +917,7 @@ public class OrderService(
                             UserId = userId,
                             LensTypeId = detail.LensTypeId,
                             LensTypeCode = detail.LensType.LensCode,
-                            LensMaterial = calculatedPricing.LensMaterial,
-                            Coatings = serializedCoatings,
                             LensBasePrice = calculatedPricing.LensBasePrice,
-                            MaterialPrice = calculatedPricing.MaterialPrice,
-                            CoatingPrice = calculatedPricing.CoatingPrice,
                             TotalLensPrice = calculatedPricing.LensPrice,
                             SphLeft = detail.SphLeft,
                             SphRight = detail.SphRight,
@@ -1045,37 +1038,6 @@ public class OrderService(
         {
             throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
         }
-    }
-
-    private static IReadOnlyList<string> DeserializeCoatings(string? serializedCoatings)
-    {
-        if (string.IsNullOrWhiteSpace(serializedCoatings))
-        {
-            return [];
-        }
-
-        return serializedCoatings
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
-    {
-        if (coatings is null || coatings.Count == 0)
-        {
-            return null;
-        }
-
-        var serialized = string.Join(",", coatings);
-
-        if (serialized.Length > 500)
-        {
-            throw CreateApiException(HttpStatusCode.BadRequest, "CHECKOUT_FAILED", "Unable to checkout selected items");
-        }
-
-        return serialized;
     }
 
     private static string? NormalizePrescriptionImageReference(string? imageReference)
@@ -1690,11 +1652,7 @@ public class OrderService(
                 PrescriptionId = prescription.PrescriptionId,
                 LensTypeId = prescription.LensTypeId,
                 LensTypeCode = prescription.LensTypeCode,
-                LensMaterial = prescription.LensMaterial,
-                Coatings = DeserializeCoatings(prescription.Coatings).ToList(),
                 LensBasePrice = prescription.LensBasePrice,
-                MaterialPrice = prescription.MaterialPrice,
-                CoatingPrice = prescription.CoatingPrice,
                 TotalLensPrice = prescription.TotalLensPrice,
                 RightEye = new OrderPrescriptionEyeResponse
                 {

@@ -8,10 +8,6 @@ public class UpsertPrescriptionCartItemRequest
 
     public int? LensTypeId { get; set; }
 
-    public string? LensMaterial { get; set; }
-
-    public List<string>? Coatings { get; set; }
-
     public PrescriptionEyeRequest? RightEye { get; set; }
 
     public PrescriptionEyeRequest? LeftEye { get; set; }

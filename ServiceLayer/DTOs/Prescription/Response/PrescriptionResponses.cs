@@ -16,8 +16,6 @@ public class PrescriptionListItemResponse
 
     public string? LensTypeCode { get; set; }
 
-    public string? LensMaterial { get; set; }
-
     public decimal TotalLensPrice { get; set; }
 
     public string? PrescriptionImageUrl { get; set; }
@@ -45,15 +43,7 @@ public class PrescriptionDetailResponse
 
     public string? LensTypeCode { get; set; }
 
-    public string? LensMaterial { get; set; }
-
-    public List<string> Coatings { get; set; } = [];
-
     public decimal LensBasePrice { get; set; }
-
-    public decimal MaterialPrice { get; set; }
-
-    public decimal CoatingPrice { get; set; }
 
     public decimal TotalLensPrice { get; set; }
 

@@ -278,8 +278,6 @@ public class CartService(
         var prescriptionPricing = _prescriptionPricingService.Calculate(
             pricing.FinalPrice,
             lensType.Price,
-            preparedRequest.LensMaterial,
-            preparedRequest.Coatings,
             preparedRequest.Quantity,
             errorCode: "INVALID_PRESCRIPTION_INPUT",
             errorMessage: "Invalid prescription input");
@@ -325,8 +323,6 @@ public class CartService(
                 OrderType = ToApiOrderType(cartItem.OrderType),
                 FramePrice = cartItem.UnitPrice,
                 LensBasePrice = prescriptionPricing.LensBasePrice,
-                MaterialPrice = prescriptionPricing.MaterialPrice,
-                CoatingPrice = prescriptionPricing.CoatingPrice,
                 LensPrice = prescriptionPricing.LensPrice,
                 TotalPrice = cartItem.TotalPrice
             };
@@ -384,8 +380,6 @@ public class CartService(
         var prescriptionPricing = _prescriptionPricingService.Calculate(
             pricing.FinalPrice,
             lensType.Price,
-            preparedRequest.LensMaterial,
-            preparedRequest.Coatings,
             preparedRequest.Quantity,
             errorCode: "INVALID_PRESCRIPTION_INPUT",
             errorMessage: "Invalid prescription input");
@@ -628,11 +622,7 @@ public class CartService(
                     LensTypeId = cartItem.CartPrescriptionDetail.LensTypeId,
                     LensCode = cartItem.CartPrescriptionDetail.LensTypeCode,
                     LensName = cartItem.CartPrescriptionDetail.LensType?.LensName,
-                    LensMaterial = cartItem.CartPrescriptionDetail.LensMaterial,
-                    Coatings = DeserializeCoatings(cartItem.CartPrescriptionDetail.Coatings),
                     LensBasePrice = cartItem.CartPrescriptionDetail.LensBasePrice,
-                    MaterialPrice = cartItem.CartPrescriptionDetail.MaterialPrice,
-                    CoatingPrice = cartItem.CartPrescriptionDetail.CoatingPrice,
                     LensPrice = cartItem.CartPrescriptionDetail.TotalLensPrice,
                     RightEye = new PrescriptionEyeResponse
                     {
@@ -699,17 +689,13 @@ public class CartService(
             throw CreateInvalidPrescriptionException("pd", "pd must be greater than 0");
         }
 
-        var lensMaterial = NormalizeOptionalText(request.LensMaterial, 50, "lensMaterial");
         var notes = NormalizeOptionalText(request.Notes, 255, "notes");
         var prescriptionImageUrl = NormalizePrescriptionImageReference(request.PrescriptionImageUrl, "prescriptionImageUrl");
-        var coatings = NormalizeCoatings(request.Coatings);
 
         return new PreparedPrescriptionRequest(
             VariantId: variantId,
             Quantity: quantity,
             LensTypeId: lensTypeId,
-            LensMaterial: lensMaterial,
-            Coatings: coatings,
             RightSph: rightEye.Sph.Value,
             RightCyl: rightEye.Cyl.Value,
             RightAxis: rightEye.Axis.Value,
@@ -746,11 +732,7 @@ public class CartService(
     {
         detail.LensTypeId = lensType.LensTypeId;
         detail.LensTypeCode = lensType.LensCode;
-        detail.LensMaterial = request.LensMaterial;
-        detail.Coatings = SerializeCoatings(request.Coatings);
         detail.LensBasePrice = pricing.LensBasePrice;
-        detail.MaterialPrice = pricing.MaterialPrice;
-        detail.CoatingPrice = pricing.CoatingPrice;
         detail.TotalLensPrice = pricing.LensPrice;
         detail.SphRight = request.RightSph;
         detail.CylRight = request.RightCyl;
@@ -775,46 +757,6 @@ public class CartService(
         return normalizedValue;
     }
 
-    private static IReadOnlyList<string> NormalizeCoatings(IReadOnlyCollection<string>? coatings)
-    {
-        if (coatings is null || coatings.Count == 0)
-        {
-            return [];
-        }
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var normalizedValues = coatings
-            .Select(NormalizeText)
-            .Where(value => value is not null)
-            .Cast<string>()
-            .Where(seen.Add)
-            .ToList();
-
-        if (normalizedValues.Count == 0)
-        {
-            return [];
-        }
-
-        _ = SerializeCoatings(normalizedValues);
-        return normalizedValues;
-    }
-
-    private static string? SerializeCoatings(IReadOnlyCollection<string>? coatings)
-    {
-        if (coatings is null || coatings.Count == 0)
-        {
-            return null;
-        }
-
-        var serializedCoatings = string.Join(",", coatings);
-        if (serializedCoatings.Length > 500)
-        {
-            throw CreateInvalidPrescriptionException("coatings", "coatings must not exceed 500 characters");
-        }
-
-        return serializedCoatings;
-    }
-
     private static string? NormalizePrescriptionImageReference(string? value, string field)
     {
         var normalizedValue = NormalizeOptionalText(value, 500, field);
@@ -828,17 +770,6 @@ public class CartService(
         }
 
         return normalizedValue;
-    }
-
-    private static List<string> DeserializeCoatings(string? coatings)
-    {
-        return string.IsNullOrWhiteSpace(coatings)
-            ? []
-            : coatings
-                .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(value => value.Trim())
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .ToList();
     }
 
     private static OrderType ParseStandardOrderType(string? rawOrderType)
@@ -972,8 +903,6 @@ public class CartService(
         int VariantId,
         int Quantity,
         int LensTypeId,
-        string? LensMaterial,
-        IReadOnlyList<string> Coatings,
         decimal RightSph,
         decimal RightCyl,
         int RightAxis,
