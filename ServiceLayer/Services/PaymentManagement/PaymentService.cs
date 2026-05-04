@@ -4,6 +4,7 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Payment;
 using ServiceLayer.DTOs.Payment.Request;
@@ -21,12 +22,14 @@ public class PaymentService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
     IPayOsGatewayClient payOsGatewayClient,
-    IPreOrderBackInStockNotificationService backInStockNotificationService) : IPaymentService
+    IPreOrderBackInStockNotificationService backInStockNotificationService,
+    IPreOrderAvailabilityReconciliationService preOrderAvailabilityReconciliationService) : IPaymentService
 {
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPayOsGatewayClient _payOsGatewayClient = payOsGatewayClient;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
+    private readonly IPreOrderAvailabilityReconciliationService _preOrderAvailabilityReconciliationService = preOrderAvailabilityReconciliationService;
 
     public async Task<CreatePaymentResponse> CreatePaymentAsync(
         int currentUserId,
@@ -298,8 +301,6 @@ public class PaymentService(
         var targetStatus = MapPayOsStatus(payOsStatus);
         var reconciled = false;
         string message;
-        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
-            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
         if (targetStatus is null)
         {
@@ -334,7 +335,7 @@ public class PaymentService(
 
                     await _unitOfWork.SaveChangesAsync(cancellationToken);
                     // Demo note: reconciliation reuses the same automatic order transition rules as normal updates.
-                    inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                    await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                         payment,
                         previousStatus,
                         "payment:reconcile",
@@ -383,7 +384,7 @@ public class PaymentService(
 
                     await _unitOfWork.SaveChangesAsync(cancellationToken);
                     // Payment rule: reconcile failure can auto-cancel the order when workflow policy allows.
-                    inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+                    await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                         payment,
                         previousStatus,
                         "payment:reconcile",
@@ -401,8 +402,6 @@ public class PaymentService(
                 message = "Payment status marked as failed from PayOS after return.";
             }
         }
-
-        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "payment:reconcile", cancellationToken);
 
         return MapPayOsPaymentReconciliation(payment, orderCode, payOsStatus, reconciled, message);
     }
@@ -433,8 +432,6 @@ public class PaymentService(
         }
 
         var previousStatus = payment.PaymentStatus;
-        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
-            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
 
         try
         {
@@ -453,7 +450,7 @@ public class PaymentService(
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             // Important: manual payment status patch can still trigger automatic order workflow actions.
-            inventoryTransitions = await ApplyAutomaticOrderTransitionsFromPaymentAsync(
+            await ApplyAutomaticOrderTransitionsFromPaymentAsync(
                 payment,
                 previousStatus,
                 "payment:update-status",
@@ -466,8 +463,6 @@ public class PaymentService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
-
-        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "payment:update-status", cancellationToken);
 
         return new PaymentStatusUpdatedResponse
         {
@@ -601,13 +596,11 @@ public class PaymentService(
 
         var successfulWebhook = IsPayOsSuccess(envelope);
 
-        var inventoryTransitions = await ApplyPayOsWebhookResultAsync(
+        await ApplyPayOsWebhookResultAsync(
             resolution.Payment,
             verification.Data,
             successfulWebhook,
             cancellationToken);
-
-        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "payment:webhook", cancellationToken);
 
         return successfulWebhook
             ? CreateWebhookResponse(true, true, "Payment processed successfully")
@@ -946,6 +939,8 @@ public class PaymentService(
         {
             inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
                 _unitOfWork,
+                _backInStockNotificationService,
+                _preOrderAvailabilityReconciliationService,
                 order,
                 updatedByUserId: null,
                 note: $"Đơn hàng đã tự động hủy do thanh toán online thất bại ({source}).",
@@ -980,22 +975,6 @@ public class PaymentService(
         }
 
         return inventoryTransitions;
-    }
-
-    private async Task NotifyBackInStockTransitionsAsync(
-        IEnumerable<OrderWorkflowMutations.InventoryQuantityTransition> transitions,
-        string source,
-        CancellationToken cancellationToken)
-    {
-        foreach (var transition in transitions)
-        {
-            await _backInStockNotificationService.HandleStockChangeAsync(
-                transition.VariantId,
-                transition.PreviousQuantity,
-                transition.CurrentQuantity,
-                source,
-                cancellationToken);
-        }
     }
 
     private static IOrderedQueryable<Payment> ApplySorting(IQueryable<Payment> query, string? sortBy, bool descending)

@@ -4,6 +4,7 @@ using RepositoryLayer.Data;
 using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Inventory;
 using ServiceLayer.Contracts.Notifications;
 using ServiceLayer.Contracts.Prescription;
 using ServiceLayer.DTOs.Prescription.Request;
@@ -17,7 +18,8 @@ namespace ServiceLayer.Services.PrescriptionManagement;
 public class PrescriptionService(
     IUnitOfWork unitOfWork,
     OnlineEyewearDbContext dbContext,
-    IPreOrderBackInStockNotificationService backInStockNotificationService) : IPrescriptionService
+    IPreOrderBackInStockNotificationService backInStockNotificationService,
+    IPreOrderAvailabilityReconciliationService preOrderAvailabilityReconciliationService) : IPrescriptionService
 {
     // Demo note: runtime review flow supports Reviewing/Approved/Rejected only.
     // NeedMoreInfo/Resubmit endpoints are intentionally deprecated to keep a single linear workflow.
@@ -31,6 +33,7 @@ public class PrescriptionService(
     private readonly IUnitOfWork _unitOfWork = unitOfWork;
     private readonly OnlineEyewearDbContext _dbContext = dbContext;
     private readonly IPreOrderBackInStockNotificationService _backInStockNotificationService = backInStockNotificationService;
+    private readonly IPreOrderAvailabilityReconciliationService _preOrderAvailabilityReconciliationService = preOrderAvailabilityReconciliationService;
 
     public async Task<PagedResult<PrescriptionListItemResponse>> GetPrescriptionsAsync(
         GetPrescriptionsRequest request,
@@ -187,9 +190,6 @@ public class PrescriptionService(
         }
 
         ValidatePrescriptionStatusTransition(prescription.PrescriptionStatus, prescriptionStatus);
-        IReadOnlyCollection<OrderWorkflowMutations.InventoryQuantityTransition> inventoryTransitions =
-            Array.Empty<OrderWorkflowMutations.InventoryQuantityTransition>();
-
         try
         {
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
@@ -208,7 +208,7 @@ public class PrescriptionService(
             if (prescriptionStatus == PrescriptionStatus.Rejected)
             {
                 // Important: rejecting prescription can auto-cancel linked prescription orders.
-                inventoryTransitions = await CancelOrdersForRejectedPrescriptionAsync(
+                await CancelOrdersForRejectedPrescriptionAsync(
                     prescriptionId,
                     staffUserId,
                     cancellationToken);
@@ -221,8 +221,6 @@ public class PrescriptionService(
             await _unitOfWork.RollbackTransactionAsync(cancellationToken);
             throw;
         }
-
-        await NotifyBackInStockTransitionsAsync(inventoryTransitions, "prescription:rejected", cancellationToken);
 
         return new PrescriptionStatusResponse
         {
@@ -305,6 +303,8 @@ public class PrescriptionService(
 
             var orderTransitions = await OrderWorkflowMutations.CancelOrderAsync(
                 _unitOfWork,
+                _backInStockNotificationService,
+                _preOrderAvailabilityReconciliationService,
                 order,
                 staffUserId,
                 // Why: order can no longer be fulfilled safely after prescription rejection.
@@ -328,22 +328,6 @@ public class PrescriptionService(
         }
 
         return mergedTransitions.Values.ToArray();
-    }
-
-    private async Task NotifyBackInStockTransitionsAsync(
-        IEnumerable<OrderWorkflowMutations.InventoryQuantityTransition> transitions,
-        string source,
-        CancellationToken cancellationToken)
-    {
-        foreach (var transition in transitions)
-        {
-            await _backInStockNotificationService.HandleStockChangeAsync(
-                transition.VariantId,
-                transition.PreviousQuantity,
-                transition.CurrentQuantity,
-                source,
-                cancellationToken);
-        }
     }
 
     private static void ValidatePrescriptionStatusTransition(PrescriptionStatus currentStatus, PrescriptionStatus nextStatus)
