@@ -1,6 +1,8 @@
 ﻿using RepositoryLayer.Entities;
 using RepositoryLayer.Enums;
 using RepositoryLayer.Interfaces;
+using ServiceLayer.Contracts.Inventory;
+using ServiceLayer.Contracts.Notifications;
 
 namespace ServiceLayer.Utilities;
 
@@ -16,6 +18,8 @@ internal static class OrderWorkflowMutations
 
     public static async Task<IReadOnlyCollection<InventoryQuantityTransition>> CancelOrderAsync(
         IUnitOfWork unitOfWork,
+        IPreOrderBackInStockNotificationService backInStockNotificationService,
+        IPreOrderAvailabilityReconciliationService preOrderAvailabilityReconciliationService,
         Order order,
         int? updatedByUserId,
         string note,
@@ -122,6 +126,22 @@ internal static class OrderWorkflowMutations
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        foreach (var transition in inventoryTransitions.Values)
+        {
+            await backInStockNotificationService.HandleStockChangeAsync(
+                transition.VariantId,
+                transition.PreviousQuantity,
+                transition.CurrentQuantity,
+                // Dedicated source for cancellation-based inventory restoration.
+                source: "order-cancel:restore-inventory",
+                cancellationToken);
+
+            await preOrderAvailabilityReconciliationService.ReconcileAfterStockIncreaseAsync(
+                transition.VariantId,
+                cancellationToken);
+        }
+
         return inventoryTransitions.Values.ToArray();
     }
 
@@ -199,5 +219,3 @@ internal static class OrderWorkflowMutations
         return order.OrderType != OrderType.PreOrder;
     }
 }
-
-
