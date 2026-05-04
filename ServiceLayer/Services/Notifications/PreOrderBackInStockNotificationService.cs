@@ -97,7 +97,7 @@ public class PreOrderBackInStockNotificationService(
                 return;
             }
 
-            var updatedAt = DateTime.Now;
+            var updatedAt = DateTime.UtcNow;
 
             foreach (var item in orderRecipientPairs)
             {
