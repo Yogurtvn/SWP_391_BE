@@ -29,6 +29,7 @@ internal sealed class PreOrderBackInStockEmailTemplateOrderItem
 internal static class PreOrderBackInStockEmailTemplateBuilder
 {
     private static readonly CultureInfo VietnameseCulture = CultureInfo.GetCultureInfo("vi-VN");
+    private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
 
     public static string Build(PreOrderBackInStockEmailTemplateData templateData)
     {
@@ -205,7 +206,49 @@ internal static class PreOrderBackInStockEmailTemplateBuilder
 
     private static string FormatDateTime(DateTime dateTime)
     {
-        return dateTime.ToString("dd/MM/yyyy HH:mm", VietnameseCulture);
+        var vietnamLocalTime = ConvertUtcToVietnamTime(dateTime);
+        return vietnamLocalTime.ToString("dd/MM/yyyy HH:mm", VietnameseCulture);
+    }
+
+    private static DateTime ConvertUtcToVietnamTime(DateTime dateTime)
+    {
+        var utcDateTime = dateTime.Kind switch
+        {
+            DateTimeKind.Utc => dateTime,
+            DateTimeKind.Local => dateTime.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+        };
+
+        return TimeZoneInfo.ConvertTimeFromUtc(utcDateTime, VietnamTimeZone);
+    }
+
+    private static TimeZoneInfo ResolveVietnamTimeZone()
+    {
+        var candidateTimeZoneIds = new[]
+        {
+            "SE Asia Standard Time",
+            "Asia/Ho_Chi_Minh"
+        };
+
+        foreach (var timeZoneId in candidateTimeZoneIds)
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            }
+            catch (TimeZoneNotFoundException)
+            {
+            }
+            catch (InvalidTimeZoneException)
+            {
+            }
+        }
+
+        return TimeZoneInfo.CreateCustomTimeZone(
+            id: "UTC+07",
+            baseUtcOffset: TimeSpan.FromHours(7),
+            displayName: "(UTC+07:00) Vietnam",
+            standardDisplayName: "Vietnam Standard Time");
     }
 
     private static string? NormalizeValue(string? value)
