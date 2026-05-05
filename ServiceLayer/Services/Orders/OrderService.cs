@@ -699,6 +699,7 @@ public class OrderService(
         var now = DateTime.UtcNow;
         var normalizedShippingFee = NormalizeMoney(shippingFee, "shippingFee");
         var normalizedOrderLevelDiscount = NormalizeMoney(orderLevelDiscountAmount, "voucherDiscountAmount");
+        var reserveInventoryAtCheckout = OrderInventoryReservationTracker.ShouldReserveInventoryAtCheckout(orderType, paymentMethod);
         // Order flow: every order starts at Pending; later guards decide automatic/manual transitions by type.
         var initialOrderStatus = orderType == OrderType.PreOrder
                                               ? OrderStatus.AwaitingStock
@@ -729,7 +730,7 @@ public class OrderService(
                 new PaymentHistory
                 {
                     PaymentStatus = PaymentStatus.Pending,
-                    Notes = "Đã tạo thanh toán.",
+                    Notes = OrderInventoryReservationTracker.BuildInitialPaymentNote(reserveInventoryAtCheckout),
                     CreatedAt = now
                 }
             ]
@@ -762,9 +763,9 @@ public class OrderService(
                     }
                 }
 
-                if (item.ReserveInventory)
+                if (item.ReserveInventory && reserveInventoryAtCheckout)
                 {
-                    // Inventory rule: Ready/Prescription orders reserve stock immediately at checkout.
+                    // Inventory rule: COD reserves immediately; online payments reserve only after confirmation.
                     var reserved = await TryDeductInventoryAsync(item.Variant.VariantId, item.Quantity, cancellationToken);
 
                     if (!reserved)
@@ -907,8 +908,8 @@ public class OrderService(
                         UnitPrice = pricing.FinalPrice,
                         PromotionNameSnapshot = pricing.PromotionName,
                         LineTotal = calculatedPricing.TotalPrice,
-                        // Business rule: frame stock for prescription orders is reserved at checkout;
-                        // prescription approval controls process start, not stock reservation timing.
+                        // ReserveInventory marks that this line needs stock reservation.
+                        // Actual timing is decided later by payment method (COD vs online).
                         ReserveInventory = true,
                         LensTypeId = detail.LensTypeId,
                         LensPrice = calculatedPricing.LensPrice,
@@ -1150,7 +1151,15 @@ public class OrderService(
             && order.OrderStatus == OrderStatus.Pending
             && nextOrderStatus == OrderStatus.Processing)
         {
+            EnsureOnlinePaymentCanMoveToProcessing(order);
             EnsurePrescriptionCanMoveToProcessing(order);
+        }
+
+        if (order.OrderType == OrderType.Ready
+            && order.OrderStatus == OrderStatus.Pending
+            && nextOrderStatus == OrderStatus.Processing)
+        {
+            EnsureOnlinePaymentCanMoveToProcessing(order);
         }
     }
 
@@ -1175,6 +1184,18 @@ public class OrderService(
                 HttpStatusCode.Conflict,
                 "PRESCRIPTION_NOT_APPROVED",
                 "Order cannot move to processing before prescriptions are approved");
+        }
+    }
+
+    private static void EnsureOnlinePaymentCanMoveToProcessing(Order order)
+    {
+        if (OrderWorkflowPolicies.HasOnlinePayment(order.Payments)
+            && !OrderWorkflowPolicies.HasCompletedOnlinePayment(order.Payments))
+        {
+            throw CreateApiException(
+                HttpStatusCode.Conflict,
+                "ORDER_STATUS_GUARD_FAILED",
+                "Order cannot move to processing before online payment is completed");
         }
     }
 
