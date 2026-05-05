@@ -92,7 +92,8 @@ public class PaymentService(
                     new PaymentHistory
                     {
                         PaymentStatus = PaymentStatus.Pending,
-                        Notes = "Đã tạo thanh toán.",
+                        Notes = OrderInventoryReservationTracker.BuildInitialPaymentNote(
+                            OrderInventoryReservationTracker.ShouldReserveInventoryAtCheckout(order.OrderType, paymentMethod)),
                         CreatedAt = now
                     }
                 ]
@@ -935,6 +936,7 @@ public class PaymentService(
         if (OrderWorkflowPolicies.IsOnlinePaymentMethod(payment.PaymentMethod)
             && payment.PaymentStatus == PaymentStatus.Failed
             && previousPaymentStatus != PaymentStatus.Failed
+            && OrderInventoryReservationTracker.ShouldAutoCancelOnOnlinePaymentFailure(order)
             && OrderWorkflowPolicies.CanTransitionOrderStatus(order.OrderType, order.OrderStatus, OrderStatus.Cancelled))
         {
             inventoryTransitions = await OrderWorkflowMutations.CancelOrderAsync(
@@ -946,6 +948,26 @@ public class PaymentService(
                 note: $"Đơn hàng đã tự động hủy do thanh toán online thất bại ({source}).",
                 cancellationToken);
             return inventoryTransitions;
+        }
+
+        // Ready/Prescription flow: online checkout does not reserve stock immediately.
+        // Stock is reserved here only after payment is confirmed as completed.
+        if (order.OrderType is OrderType.Ready or OrderType.Prescription
+            && order.OrderStatus == OrderStatus.Pending
+            && OrderWorkflowPolicies.IsOnlinePaymentMethod(payment.PaymentMethod)
+            && payment.PaymentStatus == PaymentStatus.Completed
+            && previousPaymentStatus != PaymentStatus.Completed
+            && !OrderInventoryReservationTracker.HasInventoryBeenReserved(order))
+        {
+            await ReserveInventoryForPaidOrderAsync(order, cancellationToken);
+            payment.PaymentHistories.Add(new PaymentHistory
+            {
+                PaymentStatus = PaymentStatus.Completed,
+                Notes = OrderInventoryReservationTracker.BuildInventoryReservedAfterOnlinePaymentNote(),
+                CreatedAt = DateTime.UtcNow
+            });
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
         }
 
         // Order flow: successful online payment moves pre-order from Pending to AwaitingStock automatically.
@@ -975,6 +997,43 @@ public class PaymentService(
         }
 
         return inventoryTransitions;
+    }
+
+    private async Task ReserveInventoryForPaidOrderAsync(Order order, CancellationToken cancellationToken)
+    {
+        var requiredQuantities = OrderWorkflowPolicies.GetRequiredVariantQuantities(order);
+
+        if (requiredQuantities.Count == 0)
+        {
+            throw CreateApiException(
+                HttpStatusCode.BadRequest,
+                "INVALID_ORDER_STATUS",
+                "Order has no items to reserve inventory");
+        }
+
+        foreach (var requirement in requiredQuantities)
+        {
+            if (requirement.Value <= 0)
+            {
+                throw CreateApiException(
+                    HttpStatusCode.BadRequest,
+                    "INVALID_ORDER_STATUS",
+                    "Order has invalid item quantity");
+            }
+
+            var reserved = await _unitOfWork.TryDeductInventoryAsync(
+                requirement.Key,
+                requirement.Value,
+                cancellationToken);
+
+            if (!reserved)
+            {
+                throw CreateApiException(
+                    HttpStatusCode.BadRequest,
+                    "OUT_OF_STOCK",
+                    "Số lượng sản phẩm vượt quá tồn kho.");
+            }
+        }
     }
 
     private static IOrderedQueryable<Payment> ApplySorting(IQueryable<Payment> query, string? sortBy, bool descending)

@@ -28,7 +28,7 @@ internal static class OrderWorkflowMutations
         var now = DateTime.UtcNow;
         var inventoryTransitions = new Dictionary<int, InventoryQuantityTransition>();
 
-        if (ShouldRestoreInventoryOnCancel(order))
+        if (OrderInventoryReservationTracker.ShouldRestoreInventoryOnCancel(order))
         {
             // Inventory rule: only orders that already reserved stock should return stock on cancel.
             foreach (var orderItem in order.OrderItems)
@@ -211,11 +211,5 @@ internal static class OrderWorkflowMutations
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return PreOrderProcessingTransitionResult.Success;
-    }
-
-    private static bool ShouldRestoreInventoryOnCancel(Order order)
-    {
-        // Why: pre-orders do not reserve stock at creation time, so there is nothing to return on cancellation.
-        return order.OrderType != OrderType.PreOrder;
     }
 }
